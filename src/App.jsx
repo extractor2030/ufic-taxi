@@ -106,7 +106,7 @@ const Toast = ({ message, type, onClose }) => {
   );
 };
 
-// Заглушка для BotDashboard
+// Заглушка для BotDashboard (так как файла нет в контексте)
 const BotDashboard = ({ onClose }) => (
   <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
     <div className="bg-gray-800 w-full max-w-lg rounded-2xl p-6 border border-gray-700 shadow-2xl relative">
@@ -881,7 +881,7 @@ export default function TaxiShareApp() {
                   const seatsLeft = ride.seatsTotal - ride.seatsTaken;
                   const isFull = seatsLeft <= 0;
                   const priceDisplay = getPriceDisplay(ride);
-                  const canChat = isAuthor || (myRequest && myRequest.status === 'approved');
+                  const canChat = isAuthor || !!myRequest;
 
                   return (
                     <div key={ride.id} className="bg-gray-800 border border-gray-700 rounded-xl p-4 shadow-sm relative overflow-hidden group">
@@ -1044,9 +1044,7 @@ export default function TaxiShareApp() {
                                       <div className="text-[10px] text-gray-500 mt-0.5">{formatDate(ride.date)}{priceDisplay && <span className="ml-2 text-green-400">{priceDisplay}</span>}</div>
                                    </div>
                                    <div className="flex items-center gap-2">
-                                       {status === 'approved' && (
-                                         <button onClick={() => setActiveChatRide(ride)} className="p-2 text-blue-400 hover:text-white bg-gray-700/50 rounded-lg"><MessageCircle size={14} /></button>
-                                       )}
+                                       <button onClick={() => setActiveChatRide(ride)} className="p-2 text-blue-400 hover:text-white bg-gray-700/50 rounded-lg"><MessageCircle size={14} /></button>
                                        <button onClick={() => handleCancelRequest(ride)} className="p-2 text-red-400 hover:text-white bg-red-500/10 hover:bg-red-500 rounded-lg transition"><LogOut size={14} /></button>
                                        <div className={`px-2 py-1 rounded-md text-[10px] font-bold border border-transparent ${statusConfig.bg} ${statusConfig.color}`}>{statusConfig.text}</div>
                                    </div>
