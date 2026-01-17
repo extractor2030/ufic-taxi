@@ -106,7 +106,7 @@ const Toast = ({ message, type, onClose }) => {
   );
 };
 
-// Заглушка для BotDashboard (так как файла нет в контексте)
+// Заглушка для BotDashboard
 const BotDashboard = ({ onClose }) => (
   <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
     <div className="bg-gray-800 w-full max-w-lg rounded-2xl p-6 border border-gray-700 shadow-2xl relative">
