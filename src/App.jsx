@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Home, User, PlusCircle, MapPin, Clock, Car, Search, Check, X, Calendar as CalendarIcon, Bell, MessageCircle, Trash2, AlertCircle, Loader2, LogOut, RefreshCw, Send, Banknote, FileText, Shield, UserX, Ban, Lock, Users, Edit, Terminal } from 'lucide-react';
+import { Home, User, PlusCircle, MapPin, Clock, Car, Search, Check, X, Calendar as CalendarIcon, Bell, MessageCircle, Trash2, AlertCircle, Loader2, LogOut, RefreshCw, Send, Banknote, FileText, Shield, UserX, Ban, Lock, Users, Edit, Terminal, info } from 'lucide-react';
 
 // --- ИМПОРТЫ FIREBASE ---
 import { initializeApp } from "firebase/app";
@@ -67,8 +67,12 @@ const isAdmin = ADMIN_IDS.includes(USER_INFO.id);
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 const getTodayDateString = () => {
   const d = new Date();
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  return d.toISOString().split('T')[0];
+  // Коррекция часового пояса не всегда нужна, если мы полагаемся на локальное время устройства,
+  // но для input type="date" нужен формат YYYY-MM-DD
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 };
 
 const formatDate = (dateString) => {
@@ -92,21 +96,21 @@ const formatDate = (dateString) => {
 
 const Toast = ({ message, type, onClose }) => {
   useEffect(() => {
-    const timer = setTimeout(onClose, 3000);
+    const timer = setTimeout(onClose, 5000); // Чуть дольше показываем
     return () => clearTimeout(timer);
   }, [onClose]);
 
-  const bgClass = type === 'error' ? 'bg-red-500' : 'bg-green-500';
+  const bgClass = type === 'error' ? 'bg-red-500' : (type === 'info' ? 'bg-blue-600' : 'bg-green-500');
 
   return (
-    <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg text-white text-sm font-medium animate-fade-in-down ${bgClass}`}>
-      {type === 'error' ? <AlertCircle size={18} /> : <Check size={18} />}
-      {message}
+    <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg text-white text-sm font-medium animate-fade-in-down w-[90%] max-w-sm ${bgClass}`}>
+      {type === 'error' ? <AlertCircle size={20} className="shrink-0" /> : (type === 'info' ? <Bell size={20} className="shrink-0" /> : <Check size={20} className="shrink-0" />)}
+      <div>{message}</div>
     </div>
   );
 };
 
-// Заглушка для BotDashboard (так как файла нет в контексте)
+// Заглушка для BotDashboard
 const BotDashboard = ({ onClose }) => (
   <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
     <div className="bg-gray-800 w-full max-w-lg rounded-2xl p-6 border border-gray-700 shadow-2xl relative">
@@ -264,6 +268,7 @@ const AdminPanelModal = ({ onClose, currentAdminName }) => {
       <div className="bg-gray-800 p-4 border-b border-gray-700 flex justify-between items-center shrink-0">
         <div className="flex items-center gap-2 text-white font-bold">
            <Users className="text-blue-500" size={20} /> Пользователи
+           <span className="bg-gray-700 text-gray-300 px-2 py-0.5 rounded-full text-xs ml-2">{allUsers.length}</span>
         </div>
         <button onClick={onClose} className="p-2 bg-gray-700 rounded-full hover:bg-gray-600 text-white">
           <X size={20} />
@@ -427,13 +432,14 @@ export default function TaxiShareApp() {
   const [adminMode, setAdminMode] = useState(false); 
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
   
-  // --- НОВОЕ СОСТОЯНИЕ: Открыта ли панель бота ---
   const [isBotDashboardOpen, setIsBotDashboardOpen] = useState(false);
 
   const [activeChatRide, setActiveChatRide] = useState(null);
   
-  // Состояние для редактирования
   const [editingRide, setEditingRide] = useState(null);
+  
+  // Для счетчика пользователей в админке (можно брать из rides, но лучше из коллекции users если бы мы ее читали постоянно)
+  const [totalUsersCount, setTotalUsersCount] = useState(0);
 
   const prevRequestsRef = useRef({});
 
@@ -450,13 +456,22 @@ export default function TaxiShareApp() {
     isDriver: false 
   });
 
+  // Получаем общее число пользователей для админки
+  useEffect(() => {
+     if (isAdmin) {
+        // Простая подписка для счетчика
+        const unsubscribe = onSnapshot(collection(db, "users"), (snap) => {
+            setTotalUsersCount(snap.size);
+        });
+        return () => unsubscribe();
+     }
+  }, [isAdmin]);
+
   // Автоматическая коррекция мест при смене роли
   useEffect(() => {
      if (newRide.isDriver) {
-        // Если стал водителем и мест было меньше 1 (странно) или просто дефолт
         if (newRide.seatsTotal > 4) setNewRide(prev => ({...prev, seatsTotal: 4}));
      } else {
-        // Если стал пассажиром, мест не может быть 4 (т.к. 1 занял сам)
         if (newRide.seatsTotal > 3) setNewRide(prev => ({...prev, seatsTotal: 3}));
      }
   }, [newRide.isDriver]);
@@ -503,11 +518,16 @@ export default function TaxiShareApp() {
         ...doc.data()
       }));
       const now = new Date();
-      const thresholdTime = now.getTime() - (2 * 60 * 60 * 1000); 
+      // Отображаем поездки, которые еще не удалены. Удаляем через 10 минут после старта
+      const expirationTime = now.getTime() - (10 * 60 * 1000); 
+
       const validRides = ridesData.filter(r => {
         const rideDate = new Date(`${r.date}T${r.time || '00:00'}`);
-        return rideDate.getTime() > thresholdTime;
+        // Показываем если время поездки больше (сейчас - 10 минут)
+        // Т.е. если поездка была 11 минут назад, она пропадет
+        return rideDate.getTime() > expirationTime;
       });
+
       validRides.sort((a, b) => {
         const dateA = new Date(`${a.date}T${a.time}`);
         const dateB = new Date(`${b.date}T${b.time}`);
@@ -527,7 +547,10 @@ export default function TaxiShareApp() {
     if (rides.length === 0) return;
     rides.forEach(ride => {
       const myRequest = (ride.requests || []).find(r => r.userId === USER_INFO.id);
-      if (!myRequest) return;
+      
+      // Если пользователя нет в заявках (удалился или выгнали), он не получает уведомления
+      if (!myRequest) return; 
+
       const prevStatus = prevRequestsRef.current[ride.id];
       const currentStatus = myRequest.status;
       if (prevStatus && prevStatus !== currentStatus) {
@@ -536,6 +559,55 @@ export default function TaxiShareApp() {
       }
       prevRequestsRef.current[ride.id] = currentStatus;
     });
+  }, [rides]);
+
+  // --- ЛОГИКА УВЕДОМЛЕНИЙ В ПИКОВЫЕ ЧАСЫ (CLIENT-SIDE) ---
+  useEffect(() => {
+    const checkPeakHours = () => {
+        const now = new Date();
+        const hours = now.getHours();
+        const minutes = now.getMinutes();
+        
+        // Проверяем время: 8:45 или 14:45
+        // Добавляем флаг в sessionStorage чтобы не спамить каждую секунду в течение этой минуты
+        const isMorningPeak = hours === 8 && minutes === 45;
+        const isEveningPeak = hours === 14 && minutes === 45;
+
+        if (isMorningPeak || isEveningPeak) {
+             const key = `notified_${now.getDate()}_${hours}`;
+             if (sessionStorage.getItem(key)) return;
+
+             // Проверяем, участвует ли пользователь уже в поездке
+             const amIBusy = rides.some(r => 
+                 r.authorId === USER_INFO.id || 
+                 (r.requests || []).some(req => req.userId === USER_INFO.id && req.status === 'approved')
+             );
+
+             if (!amIBusy) {
+                 const targetDirection = isMorningPeak ? 'to_city' : 'to_city'; // Обычно утром в город, а в 15:00 может и обратно, но по запросу "об общем количестве"
+                 // Посчитаем все поездки
+                 const cityRides = rides.filter(r => r.direction === 'to_city');
+                 const totalSeats = cityRides.reduce((acc, r) => acc + (r.seatsTotal - r.seatsTaken), 0);
+                 
+                 if (cityRides.length > 0) {
+                     showToast(`🚕 На 09:00 есть ${cityRides.length} поездок в город (${totalSeats} мест)`, 'info');
+                 }
+                 
+                 // Если это день
+                 if (isEveningPeak) {
+                     const ridesCount = rides.length;
+                     const freeSeats = rides.reduce((acc, r) => acc + (r.seatsTotal - r.seatsTaken), 0);
+                     if (ridesCount > 0) {
+                        showToast(`🚕 Актуально: ${ridesCount} поездок, ${freeSeats} свободных мест`, 'info');
+                     }
+                 }
+             }
+             sessionStorage.setItem(key, 'true');
+        }
+    };
+
+    const interval = setInterval(checkPeakHours, 10000); // Проверка каждые 10 сек
+    return () => clearInterval(interval);
   }, [rides]);
 
   const incomingRequestsCount = useMemo(() => {
@@ -564,27 +636,21 @@ export default function TaxiShareApp() {
     showToast("Список обновлен");
   };
 
-  // --- ЛОГИКА РЕДАКТИРОВАНИЯ ---
   const handleUpdateRide = async (rideId, updatedData) => {
     try {
       const rideRef = doc(db, "rides", rideId);
-      
-      // Обновляем данные поездки
       await updateDoc(rideRef, {
         time: updatedData.time,
         destination: updatedData.destination,
         price: updatedData.price ? parseInt(updatedData.price) : null,
         comment: updatedData.comment
       });
-
-      // Отправляем системное уведомление в чат
       await addDoc(collection(db, "rides", rideId, "messages"), {
         text: `📝 Внимание! Организатор изменил условия поездки.\nНовое время: ${updatedData.time}\nНазначение: ${updatedData.destination}`,
         senderId: 'system',
         senderName: 'System',
         createdAt: serverTimestamp()
       });
-
       showToast("Поездка обновлена");
     } catch (e) {
       console.error(e);
@@ -662,28 +728,48 @@ export default function TaxiShareApp() {
     }
   };
 
+  // ИСПРАВЛЕННЫЙ ВЫХОД ИЗ ПОЕЗДКИ (ТРАНЗАКЦИЯ)
   const handleCancelRequest = async (ride) => {
     if (!window.confirm("Выйти из этой поездки?")) return;
-    const myRequest = ride.requests.find(r => r.userId === USER_INFO.id);
-    if (!myRequest) return;
+    
+    setIsSubmitting(true);
+    const rideRef = doc(db, "rides", ride.id);
+
     try {
-      const rideRef = doc(db, "rides", ride.id);
-      if (myRequest.status === 'approved') {
-         await runTransaction(db, async (transaction) => {
-            const sfDoc = await transaction.get(rideRef);
-            if (!sfDoc.exists()) throw "Document does not exist!";
-            const data = sfDoc.data();
-            const newRequests = data.requests.filter(r => r.userId !== USER_INFO.id);
-            const newSeatsTaken = Math.max(0, data.seatsTaken - 1);
-            transaction.update(rideRef, { requests: newRequests, seatsTaken: newSeatsTaken });
-         });
-      } else {
-         await updateDoc(rideRef, { requests: arrayRemove(myRequest) });
-      }
+      await runTransaction(db, async (transaction) => {
+        const docSnapshot = await transaction.get(rideRef);
+        if (!docSnapshot.exists()) throw "Поездка не найдена";
+        
+        const data = docSnapshot.data();
+        // Проверяем, есть ли пользователь вообще в списке
+        const myRequestIndex = (data.requests || []).findIndex(r => r.userId === USER_INFO.id);
+        
+        if (myRequestIndex === -1) {
+             // Пользователя уже нет, просто выходим
+             return;
+        }
+
+        const myRequest = data.requests[myRequestIndex];
+        const newRequests = data.requests.filter(r => r.userId !== USER_INFO.id);
+        
+        // Уменьшаем счетчик ТОЛЬКО если статус был approved
+        let newSeatsTaken = data.seatsTaken;
+        if (myRequest.status === 'approved') {
+             newSeatsTaken = Math.max(0, data.seatsTaken - 1);
+        }
+
+        transaction.update(rideRef, { 
+            requests: newRequests, 
+            seatsTaken: newSeatsTaken 
+        });
+      });
+
       showToast("Вы вышли из поездки");
     } catch (e) {
       console.error(e);
       showToast("Ошибка отмены", 'error');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -697,10 +783,8 @@ export default function TaxiShareApp() {
         const data = rideDoc.data();
         if (data.seatsTaken >= data.seatsTotal) throw "Нет свободных мест!"; 
         
-        // Обновляем статус на approved
         const updatedRequests = data.requests.map(req => req.userId === userId ? { ...req, status: "approved" } : req);
         
-        // Увеличиваем счетчик
         transaction.update(rideRef, { requests: updatedRequests, seatsTaken: data.seatsTaken + 1 });
       });
       showToast("Пассажир принят!");
@@ -720,33 +804,28 @@ export default function TaxiShareApp() {
 
     try {
         await runTransaction(db, async (transaction) => {
-            // Читаем актуальное состояние из базы
             const rideDoc = await transaction.get(rideRef);
             if (!rideDoc.exists()) throw "Поездка не найдена";
             
             const data = rideDoc.data();
             const currentRequests = data.requests || [];
             
-            // Находим заявку в базе
             const requestIndex = currentRequests.findIndex(r => r.userId === userId);
             if (requestIndex === -1) return; 
 
             const currentStatus = currentRequests[requestIndex].status;
             
-            // Вычисляем новое кол-во мест, основываясь на ДАННЫХ ИЗ БАЗЫ
             let newSeatsTaken = data.seatsTaken;
             if (currentStatus === 'approved') {
                 newSeatsTaken = Math.max(0, data.seatsTaken - 1);
             }
 
-            // Создаем обновленный массив заявок
             const updatedRequests = [...currentRequests];
             updatedRequests[requestIndex] = {
                 ...updatedRequests[requestIndex],
                 status: 'rejected'
             };
 
-            // Записываем всё разом
             transaction.update(rideRef, { 
                 requests: updatedRequests, 
                 seatsTaken: newSeatsTaken 
@@ -774,6 +853,7 @@ export default function TaxiShareApp() {
 
   const filteredRides = useMemo(() => {
     return rides.filter(ride => {
+      // Исключаем свои поездки из общего списка (они в профиле), но можно и оставить для наглядности
       if (ride.authorId === USER_INFO.id) return false;
       if (filter === 'all') return true;
       return ride.direction === filter;
@@ -813,7 +893,6 @@ export default function TaxiShareApp() {
       {isAdminPanelOpen && <AdminPanelModal onClose={() => setIsAdminPanelOpen(false)} currentAdminName={USER_INFO.name} />}
       {editingRide && <EditRideModal ride={editingRide} onClose={() => setEditingRide(null)} onSave={handleUpdateRide} />}
 
-      {/* --- РЕНДЕРИНГ БОТ-ПАНЕЛИ --- */}
       {isBotDashboardOpen && (
         <BotDashboard 
             db={db} 
@@ -837,15 +916,16 @@ export default function TaxiShareApp() {
         <div className="flex items-center gap-2">
             {isAdmin && adminMode && (
                 <>
-                  {/* --- КНОПКА ОТКРЫТИЯ ПАНЕЛИ БОТА --- */}
                   <button 
                     onClick={() => setIsBotDashboardOpen(true)} 
                     className="bg-gray-800 p-2 rounded-lg text-green-400 hover:bg-gray-700 border border-gray-700"
-                    title="Панель бота"
                   >
                     <Terminal size={16} />
                   </button>
-                  <button onClick={() => setIsAdminPanelOpen(true)} className="bg-gray-800 p-2 rounded-lg text-blue-400 hover:bg-gray-700 border border-gray-700"><Users size={16} /></button>
+                  <button onClick={() => setIsAdminPanelOpen(true)} className="bg-gray-800 p-2 rounded-lg text-blue-400 hover:bg-gray-700 border border-gray-700 flex items-center gap-1">
+                    <Users size={16} />
+                    <span className="text-xs font-bold">{totalUsersCount}</span>
+                  </button>
                 </>
             )}
             <span className="text-[10px] bg-gray-800 px-2 py-1 rounded text-gray-400 border border-gray-700">{USER_INFO.name.split(' ')[0]}</span>
@@ -881,18 +961,32 @@ export default function TaxiShareApp() {
                   const seatsLeft = ride.seatsTotal - ride.seatsTaken;
                   const isFull = seatsLeft <= 0;
                   const priceDisplay = getPriceDisplay(ride);
-                  const canChat = isAuthor || !!myRequest;
+                  const canChat = isAuthor || (!!myRequest && myRequest.status !== 'rejected');
+
+                  // Проверка времени
+                  const rideDateObj = new Date(`${ride.date}T${ride.time}`);
+                  const now = new Date();
+                  const isFrozen = now >= rideDateObj; // Если время наступило, замораживаем действия
 
                   return (
-                    <div key={ride.id} className="bg-gray-800 border border-gray-700 rounded-xl p-4 shadow-sm relative overflow-hidden group">
-                      <div className={`absolute top-0 left-0 w-1.5 h-full ${ride.direction === 'to_city' ? 'bg-blue-500' : 'bg-green-500'}`}></div>
-                      <div className="flex justify-between items-start mb-3 pl-3">
+                    <div key={ride.id} className="bg-gray-800 border border-gray-700 rounded-xl p-4 shadow-sm relative overflow-hidden group mt-4">
+                      {/* Лейбл направления */}
+                      <div className={`absolute top-0 left-0 px-2 py-1 rounded-br-lg text-[9px] font-bold uppercase tracking-wider text-white shadow-sm ${ride.direction === 'to_city' ? 'bg-blue-600' : 'bg-green-600'}`}>
+                         {ride.direction === 'to_city' ? 'В ГОРОД' : 'В УФИЦ'}
+                      </div>
+
+                      <div className="flex justify-between items-start mb-3 pl-1 pt-4">
                         <div className="flex-1">
                           <div className="flex items-center justify-between pr-2">
                              <div className="flex items-center gap-2 text-gray-400 text-xs mb-1">
                                 <div className="flex items-center gap-1">
                                    {ride.isDriver ? <Car size={14} className="text-yellow-500"/> : <User size={14} />} 
-                                   <span className={`truncate max-w-[120px] ${ride.isDriver ? 'text-yellow-500 font-bold' : 'text-gray-300'}`}>{ride.author}</span>
+                                   <button 
+                                      onClick={() => setActiveChatRide(ride)} 
+                                      className={`truncate max-w-[120px] text-left hover:underline ${ride.isDriver ? 'text-yellow-500 font-bold' : 'text-gray-300'}`}
+                                   >
+                                      {ride.author}
+                                   </button>
                                 </div>
                                 {ride.telegram && !isAuthor && (
                                   <a href={`https://t.me/${ride.telegram}`} className="text-blue-400 hover:text-blue-300" onClick={(e) => e.stopPropagation()}><MessageCircle size={14} /></a>
@@ -908,14 +1002,14 @@ export default function TaxiShareApp() {
                           </div>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2 mb-4 pl-3 text-gray-300 bg-gray-900/30 p-2 rounded-lg border border-gray-700/30">
+                      <div className="flex items-center gap-2 mb-4 text-gray-300 bg-gray-900/30 p-2 rounded-lg border border-gray-700/30">
                         <MapPin size={16} className={`${ride.direction === 'to_city' ? 'text-blue-500' : 'text-green-500'} flex-shrink-0`} />
                         <span className="text-sm font-medium truncate">{ride.destination}</span>
                       </div>
                       {ride.comment && (
-                        <div className="mb-4 pl-3 text-gray-400 text-xs italic bg-gray-800/50 p-2 rounded border border-gray-700/30 flex gap-2"><FileText size={14} className="flex-shrink-0 mt-0.5" />"{ride.comment}"</div>
+                        <div className="mb-4 text-gray-400 text-xs italic bg-gray-800/50 p-2 rounded border border-gray-700/30 flex gap-2"><FileText size={14} className="flex-shrink-0 mt-0.5" />"{ride.comment}"</div>
                       )}
-                      <div className="flex justify-between items-center pl-3">
+                      <div className="flex justify-between items-center">
                         <div className="flex items-center gap-1.5">
                           {Array.from({ length: ride.seatsTotal }).map((_, idx) => {
                              const isTaken = idx < ride.seatsTaken;
@@ -930,20 +1024,27 @@ export default function TaxiShareApp() {
                                   <button onClick={(e) => { e.stopPropagation(); handleDeleteRide(ride.id); }} className="p-2 bg-red-900/30 text-red-400 rounded-lg border border-red-500/50 hover:bg-red-900/50 transition-colors" title="Удалить"><Trash2 size={16} /></button>
                                 </>
                             )}
-                            {canChat && <button onClick={() => setActiveChatRide(ride)} className="p-2 bg-gray-700 text-blue-400 rounded-lg hover:bg-gray-600 hover:text-white transition-colors relative"><MessageCircle size={16} /></button>}
-                            {isAuthor ? (
-                              <div className="px-3 py-2 bg-gray-700/50 text-gray-400 rounded-lg text-xs font-bold border border-gray-600/30 cursor-default">ВАША ПОЕЗДКА</div>
-                            ) : isApproved ? (
-                              <div className="flex gap-2">
-                                  <div className="px-3 py-2 bg-green-500/20 text-green-400 rounded-lg text-xs font-bold flex items-center gap-1 border border-green-500/30"><Check size={14} /> ВЫ ЕДЕТЕ</div>
-                                  <button onClick={() => handleCancelRequest(ride)} className="p-2 bg-gray-700 text-gray-400 rounded-lg hover:bg-gray-600 hover:text-white"><LogOut size={14} /></button>
-                              </div>
-                            ) : isRejected ? (
-                              <div className="px-3 py-2 bg-red-500/20 text-red-400 rounded-lg text-xs font-bold border border-red-500/30">ОТКАЗАНО</div>
-                            ) : isPending ? (
-                              <button onClick={() => handleCancelRequest(ride)} className="px-3 py-2 bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 rounded-lg text-xs font-bold border border-yellow-500/20 flex items-center gap-1 transition-colors"><Clock size={14} /> ОЖИДАНИЕ...</button>
+                            
+                            {isFrozen && !isApproved && !isAuthor ? (
+                                <div className="px-3 py-2 bg-gray-700/50 text-gray-500 rounded-lg text-xs font-bold border border-gray-600/30 cursor-not-allowed">УЖЕ В ПУТИ</div>
                             ) : (
-                              <button onClick={() => handleRequestJoin(ride)} disabled={isFull || isSubmitting} className={`px-4 py-2 rounded-lg text-sm font-bold shadow-lg transition-all active:scale-95 flex items-center gap-2 ${isFull ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/20'}`}>{isSubmitting ? <Loader2 size={16} className="animate-spin" /> : 'Поехать'}</button>
+                                <>
+                                    {isAuthor ? (
+                                    <div className="px-3 py-2 bg-gray-700/50 text-gray-400 rounded-lg text-xs font-bold border border-gray-600/30 cursor-default">ВАША ПОЕЗДКА</div>
+                                    ) : isApproved ? (
+                                    <div className="flex gap-2">
+                                        <div className="px-3 py-2 bg-green-500/20 text-green-400 rounded-lg text-xs font-bold flex items-center gap-1 border border-green-500/30"><Check size={14} /> ВЫ ЕДЕТЕ</div>
+                                        {/* Разрешаем выход, даже если заморожено? Обычно нет, но пусть будет пока возможность связаться в чате */}
+                                        <button onClick={() => handleCancelRequest(ride)} disabled={isFrozen} className="p-2 bg-gray-700 text-gray-400 rounded-lg hover:bg-gray-600 hover:text-white disabled:opacity-50"><LogOut size={14} /></button>
+                                    </div>
+                                    ) : isRejected ? (
+                                    <div className="px-3 py-2 bg-red-500/20 text-red-400 rounded-lg text-xs font-bold border border-red-500/30">ОТКАЗАНО</div>
+                                    ) : isPending ? (
+                                    <button onClick={() => handleCancelRequest(ride)} className="px-3 py-2 bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 rounded-lg text-xs font-bold border border-yellow-500/20 flex items-center gap-1 transition-colors"><Clock size={14} /> ОЖИДАНИЕ...</button>
+                                    ) : (
+                                    <button onClick={() => handleRequestJoin(ride)} disabled={isFull || isSubmitting || isFrozen} className={`px-4 py-2 rounded-lg text-sm font-bold shadow-lg transition-all active:scale-95 flex items-center gap-2 ${isFull || isFrozen ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/20'}`}>{isSubmitting ? <Loader2 size={16} className="animate-spin" /> : 'Поехать'}</button>
+                                    )}
+                                </>
                             )}
                         </div>
                       </div>
@@ -984,16 +1085,17 @@ export default function TaxiShareApp() {
                       <input type="text" placeholder={newRide.direction === 'to_city' ? "Например: ТЦ Мир, Горсовет..." : "Например: Институт, Общежитие..."} value={newRide.destination} onChange={(e) => setNewRide({...newRide, destination: e.target.value})} className="w-full bg-gray-800 border border-gray-700 rounded-xl py-3 pl-10 pr-4 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors placeholder:text-gray-600" />
                   </div>
                 </div>
-                <div className="flex gap-3">
-                   <div className="flex-1 space-y-2">
-                      <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider flex items-center gap-1">{newRide.isDriver ? 'Цена за человека' : 'Примерная цена такси'}</label>
-                      <div className="relative">
+                {/* Исправленное выравнивание цены и мест */}
+                <div className="grid grid-cols-2 gap-3">
+                   <div className="space-y-2">
+                      <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider flex items-center gap-1 h-4">{newRide.isDriver ? 'Цена с пассажира' : 'Цена такси'}</label>
+                      <div className="relative h-[46px]">
                          <Banknote size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                         <input type="number" placeholder={newRide.isDriver ? "Цена с пассажира" : "Общая цена такси"} value={newRide.price} onChange={(e) => setNewRide({...newRide, price: e.target.value})} className="w-full bg-gray-800 border border-gray-700 rounded-xl py-3 pl-9 pr-2 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors placeholder:text-gray-600" />
+                         <input type="number" placeholder={newRide.isDriver ? "Цена" : "Общая"} value={newRide.price} onChange={(e) => setNewRide({...newRide, price: e.target.value})} className="w-full h-full bg-gray-800 border border-gray-700 rounded-xl pl-9 pr-2 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors placeholder:text-gray-600" />
                       </div>
                    </div>
-                   <div className="flex-1 space-y-2">
-                      <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">Свободные места</label>
+                   <div className="space-y-2">
+                      <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider h-4">Свободные места</label>
                       <div className="flex bg-gray-800 p-1 rounded-xl border border-gray-700 h-[46px]">
                         {(newRide.isDriver ? [1, 2, 3, 4] : [1, 2, 3]).map(num => (
                           <button key={num} onClick={() => setNewRide({...newRide, seatsTotal: num})} className={`flex-1 rounded-lg text-sm font-bold transition-all ${newRide.seatsTotal === num ? 'bg-gray-600 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'}`}>{num}</button>
