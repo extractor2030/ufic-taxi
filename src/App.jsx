@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Home, User, PlusCircle, MapPin, Clock, Car, Search, Check, X, Calendar as CalendarIcon, Bell, MessageCircle, Trash2, AlertCircle, Loader2, LogOut, RefreshCw, Send, Banknote, FileText, Shield, UserX, Ban, Lock, Users, Edit, Terminal, info } from 'lucide-react';
+import { Home, User, PlusCircle, MapPin, Clock, Car, Search, Check, X, Bell, MessageCircle, Trash2, AlertCircle, Loader2, LogOut, RefreshCw, Send, Banknote, FileText, Shield, UserX, Ban, Lock, Users, Edit, Terminal } from 'lucide-react';
 
 // --- ИМПОРТЫ FIREBASE ---
 import { initializeApp } from "firebase/app";
@@ -18,8 +18,7 @@ import {
   serverTimestamp,
   orderBy,
   setDoc,
-  getDoc,
-  where
+  getDoc
 } from "firebase/firestore";
 
 // --- ВАШИ НАСТРОЙКИ FIREBASE ---
@@ -67,8 +66,6 @@ const isAdmin = ADMIN_IDS.includes(USER_INFO.id);
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 const getTodayDateString = () => {
   const d = new Date();
-  // Коррекция часового пояса не всегда нужна, если мы полагаемся на локальное время устройства,
-  // но для input type="date" нужен формат YYYY-MM-DD
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -96,7 +93,7 @@ const formatDate = (dateString) => {
 
 const Toast = ({ message, type, onClose }) => {
   useEffect(() => {
-    const timer = setTimeout(onClose, 5000); // Чуть дольше показываем
+    const timer = setTimeout(onClose, 5000); 
     return () => clearTimeout(timer);
   }, [onClose]);
 
@@ -438,7 +435,7 @@ export default function TaxiShareApp() {
   
   const [editingRide, setEditingRide] = useState(null);
   
-  // Для счетчика пользователей в админке (можно брать из rides, но лучше из коллекции users если бы мы ее читали постоянно)
+  // Для счетчика пользователей в админке
   const [totalUsersCount, setTotalUsersCount] = useState(0);
 
   const prevRequestsRef = useRef({});
@@ -459,7 +456,6 @@ export default function TaxiShareApp() {
   // Получаем общее число пользователей для админки
   useEffect(() => {
      if (isAdmin) {
-        // Простая подписка для счетчика
         const unsubscribe = onSnapshot(collection(db, "users"), (snap) => {
             setTotalUsersCount(snap.size);
         });
@@ -524,7 +520,6 @@ export default function TaxiShareApp() {
       const validRides = ridesData.filter(r => {
         const rideDate = new Date(`${r.date}T${r.time || '00:00'}`);
         // Показываем если время поездки больше (сейчас - 10 минут)
-        // Т.е. если поездка была 11 минут назад, она пропадет
         return rideDate.getTime() > expirationTime;
       });
 
@@ -569,7 +564,6 @@ export default function TaxiShareApp() {
         const minutes = now.getMinutes();
         
         // Проверяем время: 8:45 или 14:45
-        // Добавляем флаг в sessionStorage чтобы не спамить каждую секунду в течение этой минуты
         const isMorningPeak = hours === 8 && minutes === 45;
         const isEveningPeak = hours === 14 && minutes === 45;
 
@@ -584,8 +578,6 @@ export default function TaxiShareApp() {
              );
 
              if (!amIBusy) {
-                 const targetDirection = isMorningPeak ? 'to_city' : 'to_city'; // Обычно утром в город, а в 15:00 может и обратно, но по запросу "об общем количестве"
-                 // Посчитаем все поездки
                  const cityRides = rides.filter(r => r.direction === 'to_city');
                  const totalSeats = cityRides.reduce((acc, r) => acc + (r.seatsTotal - r.seatsTaken), 0);
                  
@@ -728,7 +720,6 @@ export default function TaxiShareApp() {
     }
   };
 
-  // ИСПРАВЛЕННЫЙ ВЫХОД ИЗ ПОЕЗДКИ (ТРАНЗАКЦИЯ)
   const handleCancelRequest = async (ride) => {
     if (!window.confirm("Выйти из этой поездки?")) return;
     
@@ -853,7 +844,6 @@ export default function TaxiShareApp() {
 
   const filteredRides = useMemo(() => {
     return rides.filter(ride => {
-      // Исключаем свои поездки из общего списка (они в профиле), но можно и оставить для наглядности
       if (ride.authorId === USER_INFO.id) return false;
       if (filter === 'all') return true;
       return ride.direction === filter;
@@ -966,7 +956,7 @@ export default function TaxiShareApp() {
                   // Проверка времени
                   const rideDateObj = new Date(`${ride.date}T${ride.time}`);
                   const now = new Date();
-                  const isFrozen = now >= rideDateObj; // Если время наступило, замораживаем действия
+                  const isFrozen = now >= rideDateObj;
 
                   return (
                     <div key={ride.id} className="bg-gray-800 border border-gray-700 rounded-xl p-4 shadow-sm relative overflow-hidden group mt-4">
@@ -1034,7 +1024,7 @@ export default function TaxiShareApp() {
                                     ) : isApproved ? (
                                     <div className="flex gap-2">
                                         <div className="px-3 py-2 bg-green-500/20 text-green-400 rounded-lg text-xs font-bold flex items-center gap-1 border border-green-500/30"><Check size={14} /> ВЫ ЕДЕТЕ</div>
-                                        {/* Разрешаем выход, даже если заморожено? Обычно нет, но пусть будет пока возможность связаться в чате */}
+                                        {/* Разрешаем выход, даже если заморожено */}
                                         <button onClick={() => handleCancelRequest(ride)} disabled={isFrozen} className="p-2 bg-gray-700 text-gray-400 rounded-lg hover:bg-gray-600 hover:text-white disabled:opacity-50"><LogOut size={14} /></button>
                                     </div>
                                     ) : isRejected ? (
@@ -1085,7 +1075,6 @@ export default function TaxiShareApp() {
                       <input type="text" placeholder={newRide.direction === 'to_city' ? "Например: ТЦ Мир, Горсовет..." : "Например: Институт, Общежитие..."} value={newRide.destination} onChange={(e) => setNewRide({...newRide, destination: e.target.value})} className="w-full bg-gray-800 border border-gray-700 rounded-xl py-3 pl-10 pr-4 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors placeholder:text-gray-600" />
                   </div>
                 </div>
-                {/* Исправленное выравнивание цены и мест */}
                 <div className="grid grid-cols-2 gap-3">
                    <div className="space-y-2">
                       <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider flex items-center gap-1 h-4">{newRide.isDriver ? 'Цена с пассажира' : 'Цена такси'}</label>
