@@ -18,7 +18,8 @@ import {
   serverTimestamp,
   orderBy,
   setDoc,
-  getDoc
+  getDoc,
+  limit // Добавил limit для выборки последнего сообщения
 } from "firebase/firestore";
 
 // --- ВАШИ НАСТРОЙКИ FIREBASE ---
@@ -59,7 +60,6 @@ const USER_INFO = user ? {
 };
 
 // --- НАСТРОЙКИ МОДЕРАЦИИ ---
-// Впишите сюда свой Telegram ID, чтобы получить права администратора
 const ADMIN_IDS = [999, 5105978639]; 
 const isAdmin = ADMIN_IDS.includes(USER_INFO.id);
 
@@ -102,7 +102,7 @@ const Toast = ({ message, type, onClose }) => {
   return (
     <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg text-white text-sm font-medium animate-fade-in-down w-[90%] max-w-sm ${bgClass}`}>
       {type === 'error' ? <AlertCircle size={20} className="shrink-0" /> : (type === 'info' ? <Bell size={20} className="shrink-0" /> : <Check size={20} className="shrink-0" />)}
-      <div>{message}</div>
+      <div className="whitespace-pre-wrap">{message}</div> {/* whitespace-pre-wrap для переноса строк \n */}
     </div>
   );
 };
@@ -463,6 +463,28 @@ export default function TaxiShareApp() {
      }
   }, [isAdmin]);
 
+  // Слушатель глобальных уведомлений (массовая рассылка внутри приложения)
+  // Имитирует "приход сообщения в боте" для тех, кто сейчас в приложении
+  useEffect(() => {
+    const q = query(collection(db, "broadcast_messages"), orderBy("createdAt", "desc"), limit(1));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+            if (change.type === "added") {
+                const data = change.doc.data();
+                const createdAt = data.createdAt?.toDate();
+                // Показываем только свежие уведомления (последние 30 сек), чтобы не спамить при обновлении
+                if (createdAt && (new Date() - createdAt) < 30000) {
+                    // Не показываем уведомление самому создателю
+                    if (data.createdBy !== USER_INFO.id) {
+                        showToast(data.message, 'info');
+                    }
+                }
+            }
+        });
+    });
+    return () => unsubscribe();
+  }, []);
+
   // Автоматическая коррекция мест при смене роли
   useEffect(() => {
      if (newRide.isDriver) {
@@ -662,7 +684,7 @@ export default function TaxiShareApp() {
     }
     setIsSubmitting(true);
     try {
-      await addDoc(collection(db, "rides"), {
+      const docRef = await addDoc(collection(db, "rides"), {
         author: USER_INFO.name,
         authorId: USER_INFO.id,
         telegram: USER_INFO.telegram || '',
@@ -675,6 +697,23 @@ export default function TaxiShareApp() {
         status: "active",
         createdAt: serverTimestamp() 
       });
+
+      // --- МАССОВАЯ РАССЫЛКА (Триггер) ---
+      // Формируем текст для рассылки всем пользователям
+      const dateStr = formatDate(newRide.date);
+      const directionStr = newRide.direction === 'to_city' ? 'В Город' : 'В УФИЦ';
+      const notificationText = `🚗 Новая поездка!\n📅 Дата: ${dateStr}\n⏰ Время: ${newRide.time}\n📍 Назначение: ${newRide.destination}\n🧭 Направление: ${directionStr}`;
+
+      // Сохраняем в коллекцию для рассылки (чтобы бот мог забрать и разослать)
+      // И для отображения уведомлений внутри приложения всем онлайн пользователям
+      await addDoc(collection(db, "broadcast_messages"), {
+         message: notificationText,
+         createdAt: serverTimestamp(),
+         createdBy: USER_INFO.id,
+         type: 'new_ride_alert'
+      });
+      // -----------------------------------
+
       showToast("Поездка создана!");
       setActiveTab('list');
       setNewRide(prev => ({ ...prev, time: '', destination: '', price: '', comment: '', isDriver: false })); 
