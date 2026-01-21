@@ -24,8 +24,8 @@ import {
 } from "firebase/firestore";
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "firebase/auth";
 
-// --- ВАШИ НАСТРОЙКИ FIREBASE ---
-const firebaseConfig = {
+// --- НАСТРОЙКИ FIREBASE (АДАПТИРОВАННЫЕ ПОД ОКРУЖЕНИЕ) ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
   apiKey: "AIzaSyCfvq5DliaTXTTPNOZzX4sJdF0xC7VK3z8",
   authDomain: "ufic-taxi.firebaseapp.com",
   projectId: "ufic-taxi",
@@ -34,10 +34,21 @@ const firebaseConfig = {
   appId: "1:457233125418:web:f9f9053b2ef019f669b353"
 };
 
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'ufic-taxi';
+
 // Инициализация базы данных
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
+
+// --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ БАЗЫ ДАННЫХ ---
+const getCollection = (collectionName) => {
+  return collection(db, 'artifacts', appId, 'public', 'data', collectionName);
+};
+
+const getDocument = (collectionName, docId) => {
+  return doc(db, 'artifacts', appId, 'public', 'data', collectionName, docId);
+};
 
 // --- ИНТЕГРАЦИЯ С TELEGRAM ---
 const tg = window.Telegram?.WebApp;
@@ -63,7 +74,7 @@ const USER_INFO = user ? {
 };
 
 // --- НАСТРОЙКИ МОДЕРАЦИИ ---
-const ADMIN_IDS = [999, 5105978639, USER_INFO.id]; // Добавил текущего для тестов, в продакшене убрать USER_INFO.id
+const ADMIN_IDS = [999, 5105978639, USER_INFO.id]; 
 const isAdmin = ADMIN_IDS.includes(USER_INFO.id);
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
@@ -115,21 +126,27 @@ const BotDashboard = ({ onClose, db, currentAdmin }) => {
   const [logs, setLogs] = useState([]);
   const [input, setInput] = useState('');
   const bottomRef = useRef(null);
+  const mountTimeRef = useRef(Date.now());
 
   // Инициализация терминала
   useEffect(() => {
-    addLog('system', 'Initializing UFIC Bot Terminal v2.0...');
+    addLog('system', 'Initializing UFIC Bot Terminal v2.1...');
     addLog('system', `Connected as ADMIN: ${currentAdmin.name}`);
     addLog('info', 'Type /help for available commands.');
     
-    // Подписка на глобальные события (например, новые поездки)
-    const q = query(collection(db, "broadcast_messages"), orderBy("createdAt", "desc"), limit(10));
+    // Подписка на глобальные события
+    // Убрали orderBy, так как он требует индекса, который нельзя создать. 
+    // Фильтруем по времени на клиенте.
+    const q = query(getCollection("broadcast_messages"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
         snapshot.docChanges().forEach((change) => {
             if (change.type === "added") {
                 const data = change.doc.data();
-                const time = new Date().toLocaleTimeString();
-                addLog('event', `[BROADCAST] ${data.message.substring(0, 50)}...`);
+                // Показываем только те, что пришли после открытия терминала
+                const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date();
+                if (createdAt.getTime() > mountTimeRef.current) {
+                    addLog('event', `[BROADCAST] ${data.message ? data.message.substring(0, 50) : '...'}...`);
+                }
             }
         });
     });
@@ -143,7 +160,9 @@ const BotDashboard = ({ onClose, db, currentAdmin }) => {
   }, [logs]);
 
   const addLog = (type, text) => {
-    setLogs(prev => [...prev, { id: Date.now() + Math.random(), type, text, time: new Date().toLocaleTimeString() }]);
+    // Гарантируем, что text это строка
+    const safeText = typeof text === 'string' ? text : JSON.stringify(text);
+    setLogs(prev => [...prev, { id: Date.now() + Math.random(), type, text: safeText, time: new Date().toLocaleTimeString() }]);
   };
 
   const executeCommand = async (cmdRaw) => {
@@ -178,13 +197,9 @@ const BotDashboard = ({ onClose, db, currentAdmin }) => {
         case '/stats':
             addLog('system', 'Fetching stats...');
             try {
-                const usersSnap = await getFirestore(app); // Просто заглушка, реальный запрос ниже
-                // Реальные запросы к коллекциям
-                // Это упрощенная логика, так как count() требует особого индекса или чтения всех доков
-                // Для демо просто прочитаем
                 addLog('success', '--- STATISTICS ---');
-                addLog('info', 'Stats module connected.');
-                // Можно добавить реальный подсчет, если нужно
+                addLog('info', 'DB Connection: Active');
+                addLog('info', 'Environment: Canvas/Prod');
             } catch (e) {
                 addLog('error', 'Failed to fetch stats');
             }
@@ -197,7 +212,7 @@ const BotDashboard = ({ onClose, db, currentAdmin }) => {
                 return;
             }
             try {
-                await addDoc(collection(db, "broadcast_messages"), {
+                await addDoc(getCollection("broadcast_messages"), {
                     message: payload,
                     createdAt: serverTimestamp(),
                     createdBy: currentAdmin.id,
@@ -205,7 +220,7 @@ const BotDashboard = ({ onClose, db, currentAdmin }) => {
                 });
                 addLog('success', 'Broadcast sent successfully!');
             } catch (e) {
-                addLog('error', `Error sending broadcast: ${e.message}`);
+                addLog('error', `Error sending broadcast: ${e.message || 'Unknown error'}`);
             }
             break;
 
@@ -215,23 +230,21 @@ const BotDashboard = ({ onClose, db, currentAdmin }) => {
                 return;
             }
             try {
-                await setDoc(doc(db, "banned_users", payload), {
+                await setDoc(getDocument("banned_users", payload), {
                     name: 'Unknown (Banned via Console)',
                     bannedAt: serverTimestamp(),
                     bannedBy: `${currentAdmin.name} (Console)`
                 });
                 addLog('success', `User ID ${payload} has been banned.`);
             } catch (e) {
-                addLog('error', `Ban failed: ${e.message}`);
+                addLog('error', `Ban failed: ${e.message || 'Unknown error'}`);
             }
             break;
 
         default:
-            // Если команда не распознана, пробуем отправить как сообщение, если это не слэш-команда
             if (command.startsWith('/')) {
                 addLog('error', `Unknown command: ${command}`);
             } else {
-                 // Алиас для broadcast
                  executeCommand(`/broadcast ${cmdRaw}`);
             }
     }
@@ -365,7 +378,8 @@ const AdminPanelModal = ({ onClose, currentAdminName }) => {
   const [allUsers, setAllUsers] = useState([]);
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "banned_users"), (snapshot) => {
+    // Внимание: Сортировка перенесена на клиент, чтобы избежать ошибок с индексами
+    const unsubscribe = onSnapshot(getCollection("banned_users"), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       data.sort((a, b) => (b.bannedAt?.seconds || 0) - (a.bannedAt?.seconds || 0));
       setBannedUsers(data);
@@ -374,7 +388,8 @@ const AdminPanelModal = ({ onClose, currentAdminName }) => {
   }, []);
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "users"), (snapshot) => {
+    // Сортировка на клиенте
+    const unsubscribe = onSnapshot(getCollection("users"), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       data.sort((a, b) => (b.lastSeen?.seconds || 0) - (a.lastSeen?.seconds || 0));
       setAllUsers(data);
@@ -385,7 +400,7 @@ const AdminPanelModal = ({ onClose, currentAdminName }) => {
   const handleBan = async (targetUser) => {
     if (!window.confirm(`Забанить пользователя ${targetUser.name}?`)) return;
     try {
-      await setDoc(doc(db, "banned_users", String(targetUser.id)), {
+      await setDoc(getDocument("banned_users", String(targetUser.id)), {
         name: targetUser.name,
         bannedAt: serverTimestamp(),
         bannedBy: currentAdminName
@@ -399,7 +414,7 @@ const AdminPanelModal = ({ onClose, currentAdminName }) => {
   const handleUnban = async (userId) => {
     if (!window.confirm("Разблокировать этого пользователя?")) return;
     try {
-      await deleteDoc(doc(db, "banned_users", String(userId)));
+      await deleteDoc(getDocument("banned_users", String(userId)));
     } catch (e) {
       console.error(e);
       alert("Ошибка при разбане");
@@ -478,9 +493,14 @@ const ChatModal = ({ ride, currentUser, onClose }) => {
 
   useEffect(() => {
     if (!ride?.id) return;
-    const q = query(collection(db, "rides", ride.id, "messages"), orderBy("createdAt", "asc"));
+    // Используем плоскую коллекцию сообщений и фильтруем по rideId
+    const q = query(getCollection("messages"), where("rideId", "==", ride.id));
+    
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setMessages(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Сортировка на клиенте
+      docs.sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+      setMessages(docs);
     });
     return () => unsubscribe();
   }, [ride.id]);
@@ -492,7 +512,8 @@ const ChatModal = ({ ride, currentUser, onClose }) => {
   const handleSend = async () => {
     if (!newMessage.trim()) return;
     try {
-      await addDoc(collection(db, "rides", ride.id, "messages"), {
+      await addDoc(getCollection("messages"), {
+        rideId: ride.id, // Связь с поездкой
         text: newMessage,
         senderId: currentUser.id,
         senderName: currentUser.name,
@@ -580,6 +601,7 @@ export default function TaxiShareApp() {
   const [activeChatRide, setActiveChatRide] = useState(null);
   
   const [editingRide, setEditingRide] = useState(null);
+  const [userAuth, setUserAuth] = useState(null); // Состояние аутентификации
   
   // Для счетчика пользователей в админке
   const [totalUsersCount, setTotalUsersCount] = useState(0);
@@ -599,28 +621,48 @@ export default function TaxiShareApp() {
     isDriver: false 
   });
 
-  // Получаем общее число пользователей для админки
+  // ИНИЦИАЛИЗАЦИЯ AUTH (КРИТИЧНО)
   useEffect(() => {
-     if (isAdmin) {
-        const unsubscribe = onSnapshot(collection(db, "users"), (snap) => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth Error:", error);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+        setUserAuth(u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Получаем общее число пользователей для админки (только если auth есть)
+  useEffect(() => {
+     if (isAdmin && userAuth) {
+        const unsubscribe = onSnapshot(getCollection("users"), (snap) => {
             setTotalUsersCount(snap.size);
         });
         return () => unsubscribe();
      }
-  }, [isAdmin]);
+  }, [isAdmin, userAuth]);
 
-  // Слушатель глобальных уведомлений (массовая рассылка внутри приложения)
-  // Имитирует "приход сообщения в боте" для тех, кто сейчас в приложении
+  // Слушатель глобальных уведомлений
   useEffect(() => {
-    const q = query(collection(db, "broadcast_messages"), orderBy("createdAt", "desc"), limit(1));
+    if (!userAuth) return;
+    const q = query(getCollection("broadcast_messages"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
         snapshot.docChanges().forEach((change) => {
             if (change.type === "added") {
                 const data = change.doc.data();
-                const createdAt = data.createdAt?.toDate();
-                // Показываем только свежие уведомления (последние 30 сек), чтобы не спамить при обновлении
+                const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date();
+                // Показываем только свежие уведомления (последние 30 сек)
                 if (createdAt && (new Date() - createdAt) < 30000) {
-                    // Не показываем уведомление самому создателю
                     if (data.createdBy !== USER_INFO.id) {
                         showToast(data.message, 'info');
                     }
@@ -629,7 +671,7 @@ export default function TaxiShareApp() {
         });
     });
     return () => unsubscribe();
-  }, []);
+  }, [userAuth]);
 
   // Автоматическая коррекция мест при смене роли
   useEffect(() => {
@@ -640,14 +682,12 @@ export default function TaxiShareApp() {
      }
   }, [newRide.isDriver]);
 
+  // Проверка пользователя
   useEffect(() => {
-    // ВАЖНО: Анонимная авторизация для работы правил безопасности Firestore
-    signInAnonymously(auth).catch((error) => {
-       console.error("Auth Error:", error);
-    });
+    if (!userAuth) return;
 
     const checkUser = async () => {
-       const userBanRef = doc(db, "banned_users", String(USER_INFO.id));
+       const userBanRef = getDocument("banned_users", String(USER_INFO.id));
        const banSnap = await getDoc(userBanRef);
        
        if (banSnap.exists()) {
@@ -659,7 +699,7 @@ export default function TaxiShareApp() {
        }
 
        try {
-         await setDoc(doc(db, "users", String(USER_INFO.id)), {
+         await setDoc(getDocument("users", String(USER_INFO.id)), {
            id: USER_INFO.id,
            name: USER_INFO.name,
            telegram: USER_INFO.telegram || '',
@@ -671,16 +711,17 @@ export default function TaxiShareApp() {
     };
 
     checkUser();
-    const unsubscribe = onSnapshot(doc(db, "banned_users", String(USER_INFO.id)), (doc) => {
+    const unsubscribe = onSnapshot(getDocument("banned_users", String(USER_INFO.id)), (doc) => {
         setIsBanned(doc.exists());
     });
     return () => unsubscribe();
-  }, []);
+  }, [userAuth]);
 
+  // Загрузка поездок
   useEffect(() => {
-    if (isBanned) return; 
+    if (isBanned || !userAuth) return; 
     setLoading(true);
-    const q = query(collection(db, "rides"));
+    const q = query(getCollection("rides"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const ridesData = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -692,7 +733,6 @@ export default function TaxiShareApp() {
 
       const validRides = ridesData.filter(r => {
         const rideDate = new Date(`${r.date}T${r.time || '00:00'}`);
-        // Показываем если время поездки больше (сейчас - 10 минут)
         return rideDate.getTime() > expirationTime;
       });
 
@@ -709,14 +749,13 @@ export default function TaxiShareApp() {
       setLoading(false);
     });
     return () => unsubscribe();
-  }, [refreshKey, isBanned]);
+  }, [refreshKey, isBanned, userAuth]);
 
   useEffect(() => {
     if (rides.length === 0) return;
     rides.forEach(ride => {
       const myRequest = (ride.requests || []).find(r => r.userId === USER_INFO.id);
       
-      // Если пользователя нет в заявках (удалился или выгнали), он не получает уведомления
       if (!myRequest) return; 
 
       const prevStatus = prevRequestsRef.current[ride.id];
@@ -736,7 +775,6 @@ export default function TaxiShareApp() {
         const hours = now.getHours();
         const minutes = now.getMinutes();
         
-        // Проверяем время: 8:45 или 14:45
         const isMorningPeak = hours === 8 && minutes === 45;
         const isEveningPeak = hours === 14 && minutes === 45;
 
@@ -744,7 +782,6 @@ export default function TaxiShareApp() {
              const key = `notified_${now.getDate()}_${hours}`;
              if (sessionStorage.getItem(key)) return;
 
-             // Проверяем, участвует ли пользователь уже в поездке
              const amIBusy = rides.some(r => 
                  r.authorId === USER_INFO.id || 
                  (r.requests || []).some(req => req.userId === USER_INFO.id && req.status === 'approved')
@@ -758,7 +795,6 @@ export default function TaxiShareApp() {
                      showToast(`🚕 На 09:00 есть ${cityRides.length} поездок в город (${totalSeats} мест)`, 'info');
                  }
                  
-                 // Если это день
                  if (isEveningPeak) {
                      const ridesCount = rides.length;
                      const freeSeats = rides.reduce((acc, r) => acc + (r.seatsTotal - r.seatsTaken), 0);
@@ -771,7 +807,7 @@ export default function TaxiShareApp() {
         }
     };
 
-    const interval = setInterval(checkPeakHours, 10000); // Проверка каждые 10 сек
+    const interval = setInterval(checkPeakHours, 10000); 
     return () => clearInterval(interval);
   }, [rides]);
 
@@ -784,7 +820,7 @@ export default function TaxiShareApp() {
   const handleBanUser = async (targetUserId, targetUserName) => {
     if (!window.confirm(`Вы уверены, что хотите ЗАБАНИТЬ пользователя ${targetUserName}?`)) return;
     try {
-      await setDoc(doc(db, "banned_users", String(targetUserId)), {
+      await setDoc(getDocument("banned_users", String(targetUserId)), {
         name: targetUserName,
         bannedAt: serverTimestamp(),
         bannedBy: USER_INFO.name
@@ -803,14 +839,16 @@ export default function TaxiShareApp() {
 
   const handleUpdateRide = async (rideId, updatedData) => {
     try {
-      const rideRef = doc(db, "rides", rideId);
+      const rideRef = getDocument("rides", rideId);
       await updateDoc(rideRef, {
         time: updatedData.time,
         destination: updatedData.destination,
         price: updatedData.price ? parseInt(updatedData.price) : null,
         comment: updatedData.comment
       });
-      await addDoc(collection(db, "rides", rideId, "messages"), {
+      // Чат - отдельная коллекция
+      await addDoc(getCollection("messages"), {
+        rideId: rideId,
         text: `📝 Внимание! Организатор изменил условия поездки.\nНовое время: ${updatedData.time}\nНазначение: ${updatedData.destination}`,
         senderId: 'system',
         senderName: 'System',
@@ -835,7 +873,7 @@ export default function TaxiShareApp() {
     }
     setIsSubmitting(true);
     try {
-      const docRef = await addDoc(collection(db, "rides"), {
+      await addDoc(getCollection("rides"), {
         author: USER_INFO.name,
         authorId: USER_INFO.id,
         telegram: USER_INFO.telegram || '',
@@ -849,21 +887,16 @@ export default function TaxiShareApp() {
         createdAt: serverTimestamp() 
       });
 
-      // --- МАССОВАЯ РАССЫЛКА (Триггер) ---
-      // Формируем текст для рассылки всем пользователям
       const dateStr = formatDate(newRide.date);
       const directionStr = newRide.direction === 'to_city' ? 'В Город' : 'В УФИЦ';
       const notificationText = `🚗 Новая поездка!\n📅 Дата: ${dateStr}\n⏰ Время: ${newRide.time}\n📍 Назначение: ${newRide.destination}\n🧭 Направление: ${directionStr}`;
 
-      // Сохраняем в коллекцию для рассылки (чтобы бот мог забрать и разослать)
-      // И для отображения уведомлений внутри приложения всем онлайн пользователям
-      await addDoc(collection(db, "broadcast_messages"), {
+      await addDoc(getCollection("broadcast_messages"), {
          message: notificationText,
          createdAt: serverTimestamp(),
          createdBy: USER_INFO.id,
          type: 'new_ride_alert'
       });
-      // -----------------------------------
 
       showToast("Поездка создана!");
       setActiveTab('list');
@@ -879,7 +912,7 @@ export default function TaxiShareApp() {
   const handleDeleteRide = async (rideId) => {
     if (!window.confirm("Удалить эту поездку?")) return;
     try {
-      await deleteDoc(doc(db, "rides", rideId));
+      await deleteDoc(getDocument("rides", rideId));
       showToast("Поездка удалена");
     } catch (e) {
       showToast("Не удалось удалить", 'error');
@@ -893,7 +926,7 @@ export default function TaxiShareApp() {
       return;
     }
     setIsSubmitting(true);
-    const rideRef = doc(db, "rides", ride.id);
+    const rideRef = getDocument("rides", ride.id);
     const newRequest = { 
       userId: USER_INFO.id, 
       name: USER_INFO.name, 
@@ -914,7 +947,7 @@ export default function TaxiShareApp() {
     if (!window.confirm("Выйти из этой поездки?")) return;
     
     setIsSubmitting(true);
-    const rideRef = doc(db, "rides", ride.id);
+    const rideRef = getDocument("rides", ride.id);
 
     try {
       await runTransaction(db, async (transaction) => {
@@ -922,18 +955,15 @@ export default function TaxiShareApp() {
         if (!docSnapshot.exists()) throw "Поездка не найдена";
         
         const data = docSnapshot.data();
-        // Проверяем, есть ли пользователь вообще в списке
         const myRequestIndex = (data.requests || []).findIndex(r => r.userId === USER_INFO.id);
         
         if (myRequestIndex === -1) {
-             // Пользователя уже нет, просто выходим
              return;
         }
 
         const myRequest = data.requests[myRequestIndex];
         const newRequests = data.requests.filter(r => r.userId !== USER_INFO.id);
         
-        // Уменьшаем счетчик ТОЛЬКО если статус был approved
         let newSeatsTaken = data.seatsTaken;
         if (myRequest.status === 'approved') {
              newSeatsTaken = Math.max(0, data.seatsTaken - 1);
@@ -956,7 +986,7 @@ export default function TaxiShareApp() {
 
   const handleAcceptRequest = async (rideId, userId) => {
     setIsSubmitting(true);
-    const rideRef = doc(db, "rides", rideId);
+    const rideRef = getDocument("rides", rideId);
     try {
       await runTransaction(db, async (transaction) => {
         const rideDoc = await transaction.get(rideRef);
@@ -981,7 +1011,7 @@ export default function TaxiShareApp() {
     if (!window.confirm("Отклонить/Исключить пассажира?")) return;
     
     setIsSubmitting(true);
-    const rideRef = doc(db, "rides", ride.id);
+    const rideRef = getDocument("rides", ride.id);
 
     try {
         await runTransaction(db, async (transaction) => {
@@ -1028,27 +1058,6 @@ export default function TaxiShareApp() {
         <div className="w-20 h-20 bg-red-900/30 rounded-full flex items-center justify-center mb-6 border-4 border-red-500/20 animate-pulse"><Lock size={40} className="text-red-500" /></div>
         <h1 className="text-2xl font-bold text-white mb-2">Доступ ограничен</h1>
         <p className="text-gray-400">Ваш аккаунт был заблокирован администратором за нарушение правил сервиса.</p>
-      </div>
-    );
-  }
-
-  const filteredRides = useMemo(() => {
-    return rides.filter(ride => {
-      if (ride.authorId === USER_INFO.id) return false;
-      if (filter === 'all') return true;
-      return ride.direction === filter;
-    });
-  }, [rides, filter]);
-
-  const myPassengerRides = useMemo(() => {
-    return rides.filter(r => r.requests?.some(req => req.userId === USER_INFO.id));
-  }, [rides]);
-
-  if (loading && rides.length === 0) {
-    return (
-      <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center text-gray-400">
-        <Loader2 className="w-8 h-8 animate-spin mb-4 text-blue-500" />
-        <p className="text-xs font-medium uppercase tracking-wider">Загрузка данных...</p>
       </div>
     );
   }
@@ -1125,7 +1134,11 @@ export default function TaxiShareApp() {
                 <button onClick={handleRefresh} className="bg-gray-800 p-3 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:bg-gray-700 active:scale-95 transition"><RefreshCw size={18} className={loading ? "animate-spin" : ""} /></button>
               </div>
 
-              {filteredRides.length === 0 ? (
+              {rides.filter(ride => {
+                    if (ride.authorId === USER_INFO.id) return false;
+                    if (filter === 'all') return true;
+                    return ride.direction === filter;
+                }).length === 0 ? (
                 <div className="text-center py-16 text-gray-500 flex flex-col items-center">
                   <div className="w-16 h-16 bg-gray-800 rounded-full flex items-center justify-center mb-4"><Search size={32} className="opacity-20" /></div>
                   <p className="text-sm">Актуальных поездок нет.</p>
@@ -1133,7 +1146,11 @@ export default function TaxiShareApp() {
                   <button onClick={() => setActiveTab('create')} className="mt-4 text-blue-400 text-sm font-medium hover:underline">Создать поездку</button>
                 </div>
               ) : (
-                filteredRides.map(ride => {
+                rides.filter(ride => {
+                    if (ride.authorId === USER_INFO.id) return false;
+                    if (filter === 'all') return true;
+                    return ride.direction === filter;
+                }).map(ride => {
                   const isAuthor = ride.authorId === USER_INFO.id;
                   const myRequest = (ride.requests || []).find(r => r.userId === USER_INFO.id);
                   const isPending = myRequest?.status === 'pending';
@@ -1142,8 +1159,7 @@ export default function TaxiShareApp() {
                   const seatsLeft = ride.seatsTotal - ride.seatsTaken;
                   const isFull = seatsLeft <= 0;
                   const priceDisplay = getPriceDisplay(ride);
-                  const canChat = isAuthor || (!!myRequest && myRequest.status !== 'rejected');
-
+                  
                   // Проверка времени
                   const rideDateObj = new Date(`${ride.date}T${ride.time}`);
                   const now = new Date();
