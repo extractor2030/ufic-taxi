@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Home, User, PlusCircle, MapPin, Clock, Car, Search, Check, X, Bell, 
   MessageCircle, Trash2, AlertCircle, Loader2, LogOut, RefreshCw, Send, 
@@ -44,22 +44,39 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
 // --- ИНТЕГРАЦИЯ С TELEGRAM ---
-const tg = window.Telegram?.WebApp;
+// Безопасная инициализация
+const getTelegramApp = () => {
+  try {
+    return window.Telegram?.WebApp;
+  } catch (e) {
+    return null;
+  }
+};
+
+const tg = getTelegramApp();
 
 if (tg) {
   tg.ready();
   tg.expand();
-  if (tg.setHeaderColor) tg.setHeaderColor(tg.themeParams.bg_color || '#111827');
-  if (tg.setBackgroundColor) tg.setBackgroundColor(tg.themeParams.bg_color || '#111827');
+  if (tg.setHeaderColor && tg.themeParams) {
+     try {
+        tg.setHeaderColor(tg.themeParams.bg_color || '#111827');
+     } catch (e) {}
+  }
+  if (tg.setBackgroundColor && tg.themeParams) {
+     try {
+        tg.setBackgroundColor(tg.themeParams.bg_color || '#111827');
+     } catch (e) {}
+  }
 }
 
 // Получаем данные пользователя
-const user = tg?.initDataUnsafe?.user;
+const telegramUser = tg?.initDataUnsafe?.user;
 
-const USER_INFO = user ? {
-  name: `${user.first_name} ${user.last_name || ''}`.trim(),
-  id: user.id, 
-  telegram: user.username,
+const USER_INFO = telegramUser ? {
+  name: `${telegramUser.first_name} ${telegramUser.last_name || ''}`.trim(),
+  id: telegramUser.id, 
+  telegram: telegramUser.username,
 } : {
   name: "Тестовый Пользователь",
   id: 999, 
@@ -118,12 +135,12 @@ const Toast = ({ message, type, onClose }) => {
 function BotDashboard({ db, onClose }) {
   const [logs, setLogs] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
-  const [token, setToken] = useState(localStorage.getItem('bot_token') || '');
+  const [token, setToken] = useState(() => localStorage.getItem('bot_token') || '');
   
   const ridesCache = useRef({});
   const unsubscribers = useRef([]);
   const startTimeRef = useRef(null); 
-  const processedAlertsRef = useRef(new Set()); // Для отслеживания отправленных глобальных алертов
+  const processedAlertsRef = useRef(new Set()); 
 
   const logsEndRef = useRef(null);
   useEffect(() => {
@@ -146,7 +163,6 @@ function BotDashboard({ db, onClose }) {
     if (String(chatId).length < 5) return;
 
     try {
-      // addLog(`📤 Попытка отправки ID: ${chatId}...`, 'system'); // Слишком много логов при рассылке
       const url = `https://api.telegram.org/bot${token}/sendMessage`;
       
       const response = await fetch(url, {
@@ -173,7 +189,7 @@ function BotDashboard({ db, onClose }) {
     }
   };
 
-  // Функция массовой рассылки с возможностью исключения ID (например, автора)
+  // Функция массовой рассылки (ОБЩЕЕ УВЕДОМЛЕНИЕ)
   const broadcastToAllUsers = async (text, excludeId = null) => {
       addLog("📢 Начинаю массовую рассылку...", "warning");
       try {
@@ -181,7 +197,7 @@ function BotDashboard({ db, onClose }) {
           let count = 0;
           usersSnap.forEach(doc => {
               const userData = doc.data();
-              // Проверяем, что ID существует и не совпадает с исключением
+              // Исключаем автора события, чтобы не спамить ему
               if (userData.id && String(userData.id) !== String(excludeId)) {
                   sendTelegramMessage(userData.id, text);
                   count++;
@@ -199,26 +215,25 @@ function BotDashboard({ db, onClose }) {
       const minutes = now.getMinutes();
       const dateStr = now.toDateString(); 
 
-      // Ключи для уникальности события на сегодня
       const morningKey = `morning_alert_${dateStr}`;
       const afternoonKey = `afternoon_alert_${dateStr}`;
 
-      // --- УТРЕННЯЯ РАССЫЛКА (07:30) ---
+      // --- УТРЕННЯЯ РАССЫЛКА (07:30) - ОБЩЕЕ ---
       if (hours === 7 && minutes === 30 && !processedAlertsRef.current.has(morningKey)) {
           processedAlertsRef.current.add(morningKey);
           
-          // Собираем статистику (поездки в город до 11:00)
           const ridesSnap = await getDocs(collection(db, "rides"));
           const validRides = [];
           let freeSeats = 0;
 
           ridesSnap.forEach(doc => {
               const r = doc.data();
-              // Фильтр: сегодня, в город, время < 11:00
-              const rideTime = parseInt(r.time.replace(':', ''));
-              if (r.date === getTodayDateString() && r.direction === 'to_city' && rideTime <= 1100) {
-                  validRides.push(r);
-                  freeSeats += (parseInt(r.seatsTotal || 0) - parseInt(r.seatsTaken || 0));
+              if (r.time) {
+                  const rideTime = parseInt(r.time.replace(':', ''));
+                  if (r.date === getTodayDateString() && r.direction === 'to_city' && rideTime <= 1100) {
+                      validRides.push(r);
+                      freeSeats += (parseInt(r.seatsTotal || 0) - parseInt(r.seatsTaken || 0));
+                  }
               }
           });
 
@@ -230,22 +245,23 @@ function BotDashboard({ db, onClose }) {
           }
       }
 
-      // --- ДНЕВНАЯ РАССЫЛКА (14:30) ---
+      // --- ДНЕВНАЯ РАССЫЛКА (14:30) - ОБЩЕЕ ---
       if (hours === 14 && minutes === 30 && !processedAlertsRef.current.has(afternoonKey)) {
           processedAlertsRef.current.add(afternoonKey);
 
-          // Поездки с 14:30 до конца дня
           const ridesSnap = await getDocs(collection(db, "rides"));
           const validRides = [];
           let freeSeats = 0;
 
           ridesSnap.forEach(doc => {
               const r = doc.data();
-              const rideTimeVal = parseInt(r.time.replace(':', ''));
-              // Берем поездки с 14:30 до конца дня
-              if (r.date === getTodayDateString() && rideTimeVal >= 1430) {
-                  validRides.push(r);
-                  freeSeats += (parseInt(r.seatsTotal || 0) - parseInt(r.seatsTaken || 0));
+              if (r.time) {
+                  const rideTimeVal = parseInt(r.time.replace(':', ''));
+                  // Берем поездки с 14:30 до конца дня
+                  if (r.date === getTodayDateString() && rideTimeVal >= 1430) {
+                      validRides.push(r);
+                      freeSeats += (parseInt(r.seatsTotal || 0) - parseInt(r.seatsTaken || 0));
+                  }
               }
           });
 
@@ -268,7 +284,7 @@ function BotDashboard({ db, onClose }) {
     startTimeRef.current = new Date();
     addLog("🚀 БОТ ЗАПУЩЕН. Слушаю события...", 'success');
 
-    // 1. Слушаем сообщения
+    // 1. Слушаем сообщения - ЛИЧНЫЕ УВЕДОМЛЕНИЯ
     const qMessages = query(
         collectionGroup(db, 'messages'), 
         where('createdAt', '>', startTimeRef.current),
@@ -291,6 +307,7 @@ function BotDashboard({ db, onClose }) {
                     const ride = rideSnap.data();
                     const recipients = new Set();
                     
+                    // Уведомляем только участников (водителя и принятых пассажиров)
                     if (ride.authorId !== msg.senderId) recipients.add(ride.authorId);
                     if (ride.requests) {
                         ride.requests.forEach(r => {
@@ -300,7 +317,7 @@ function BotDashboard({ db, onClose }) {
                         });
                     }
                     
-                    const text = `💬 <b>Новое сообщение</b>\n👤 ${msg.senderName}: "${msg.text}"`;
+                    const text = `💬 <b>Новое сообщение</b>\n👤 ${msg.senderName}: "${msg.text}"\n<i>(Только для участников поездки)</i>`;
                     recipients.forEach(id => sendTelegramMessage(id, text));
                     
                 } catch (e) {
@@ -310,7 +327,7 @@ function BotDashboard({ db, onClose }) {
         });
     });
 
-    // 2. Слушаем поездки (Изменения статусов + НОВЫЕ ЗАЯВКИ ВСЕМ + НОВАЯ ПОЕЗДКА)
+    // 2. Слушаем поездки
     const qRides = query(collection(db, 'rides'));
     
     const unsubRides = onSnapshot(qRides, (snapshot) => {
@@ -319,16 +336,16 @@ function BotDashboard({ db, onClose }) {
             const rideId = change.doc.id;
             const currentRequests = rideData.requests || [];
 
-            // --- НОВАЯ ПОЕЗДКА ---
+            // --- СОЗДАНИЕ НОВОЙ ПОЕЗДКИ (ОБЩЕЕ УВЕДОМЛЕНИЕ) ---
             if (change.type === 'added') {
                 ridesCache.current[rideId] = currentRequests;
                 
-                // Проверяем, что поездка создана ПОСЛЕ запуска бота
                 const createdAt = rideData.createdAt?.toDate ? rideData.createdAt.toDate() : new Date(0);
                 if (createdAt > startTimeRef.current) {
-                     const msg = `🚗 <b>Новая поездка!</b>\n👤 <b>${rideData.author}</b>\n📍 ${rideData.direction === 'to_city' ? 'В ГОРОД' : 'В УФИЦ'} (${rideData.destination})\n🕒 <b>${rideData.time}</b>\n💰 ${rideData.price || '?'} ₽\n\nЗаходите в приложение, чтобы занять место!`;
+                     const dateFormatted = formatDate(rideData.date); // Форматируем дату
+                     const msg = `🚗 <b>Новая поездка!</b>\n📅 <b>${dateFormatted}</b>\n👤 <b>${rideData.author}</b>\n📍 ${rideData.direction === 'to_city' ? 'В ГОРОД' : 'В УФИЦ'} (${rideData.destination})\n🕒 <b>${rideData.time}</b>\n💰 ${rideData.price || '?'} ₽\n\nЗаходите в приложение, чтобы занять место!`;
                      
-                     // ОТПРАВЛЯЕМ ВСЕМ, КРОМЕ АВТОРА
+                     // Отправляем ВСЕМ пользователям (кроме создателя)
                      broadcastToAllUsers(msg, rideData.authorId);
                 }
                 return; 
@@ -340,34 +357,37 @@ function BotDashboard({ db, onClose }) {
                 currentRequests.forEach(async (newReq) => {
                     const oldReq = prevRequests.find(r => r.userId === newReq.userId);
 
-                    // --- НОВАЯ ЗАЯВКА НА УЧАСТИЕ ---
+                    // --- НОВАЯ ЗАЯВКА НА УЧАСТИЕ (ОБЩЕЕ УВЕДОМЛЕНИЕ) ---
                     if (!oldReq) {
-                        // 1. Уведомление водителю
-                        addLog(`🆕 Заявка от ${newReq.name}`, 'warning');
+                        const dateFormatted = formatDate(rideData.date);
+                        
+                        // 1. ЛИЧНОЕ уведомление водителю (чтобы он точно увидел)
                         sendTelegramMessage(rideData.authorId, 
-                            `🚕 <b>Новая заявка!</b>\n👤 <b>${newReq.name}</b>\n📍 ${rideData.destination}\n⏰ ${rideData.time}`);
+                            `🚕 <b>Новая заявка вам!</b>\n👤 <b>${newReq.name}</b> хочет поехать.\n📅 ${dateFormatted}\n📍 ${rideData.destination}\n⏰ ${rideData.time}`);
                         
-                        // 2. Уведомление ВСЕМ пользователям (кроме водителя и заявителя)
-                        const msg = `🔔 <b>Кто-то хочет поехать!</b>\nЗаявка на <b>${rideData.time}</b> (${rideData.destination}).\nМожет, пора и вам присоединиться?`;
+                        // 2. ОБЩЕЕ уведомление всем остальным
+                        const msg = `🔔 <b>Кто-то хочет поехать!</b>\nПользователь оставил заявку на поездку:\n📅 <b>${dateFormatted}</b>\n⏰ <b>${rideData.time}</b> (${rideData.destination}).\n\nМожет, пора и вам присоединиться?`;
                         
-                        // Получаем всех юзеров и шлем (исключая участников)
+                        // Рассылаем всем, кроме автора поездки (он получил личное) и самого заявителя
                         const usersSnap = await getDocs(collection(db, "users"));
                         usersSnap.forEach(uDoc => {
                             const uData = uDoc.data();
-                            // Не отправляем водителю и заявителю
-                            if (uData.id !== rideData.authorId && uData.id !== newReq.userId) {
+                            if (uData.id && String(uData.id) !== String(rideData.authorId) && String(uData.id) !== String(newReq.userId)) {
                                 sendTelegramMessage(uData.id, msg);
                             }
                         });
+                        addLog(`🔔 Общее уведомление о заявке отправлено`, 'success');
                     }
-                    // --- ИЗМЕНЕНИЕ СТАТУСА ---
+                    
+                    // --- ИЗМЕНЕНИЕ СТАТУСА (ЛИЧНОЕ УВЕДОМЛЕНИЕ) ---
                     else if (oldReq.status !== newReq.status) {
+                        const dateFormatted = formatDate(rideData.date);
                         if (newReq.status === 'approved') {
                             sendTelegramMessage(newReq.userId, 
-                                `✅ <b>Заявка принята!</b>\n🚘 Водитель: ${rideData.author}\n⏰ ${rideData.time}\n📍 Назначение: ${rideData.destination}`);
+                                `✅ <b>Заявка принята!</b>\n📅 ${dateFormatted}\n🚘 Водитель: ${rideData.author}\n⏰ ${rideData.time}\n📍 Назначение: ${rideData.destination}`);
                         } else if (newReq.status === 'rejected') {
                             sendTelegramMessage(newReq.userId, 
-                                `❌ <b>Заявка отклонена</b>\nВодитель отклонил вашу заявку на ${rideData.time}.`);
+                                `❌ <b>Заявка отклонена</b>\n📅 ${dateFormatted}\nВодитель отклонил вашу заявку на ${rideData.time}.`);
                         }
                     }
                 });
@@ -379,7 +399,7 @@ function BotDashboard({ db, onClose }) {
         });
     });
 
-    // 3. Таймер для рассылок (каждую минуту)
+    // 3. Таймер
     const intervalId = setInterval(checkScheduledAlerts, 60000);
 
     unsubscribers.current = [unsubMsg, unsubRides, () => clearInterval(intervalId)];
@@ -1136,12 +1156,6 @@ export default function TaxiShareApp() {
         setIsSubmitting(false);
     }
   };
-
-  // --- УБРАНА БЛОКИРОВКА ИНТЕРФЕЙСА (теперь просто не загружаем, если бан, но рендерим UI) ---
-  // В стабильной версии блокировка была полная (return early). 
-  // Я оставлю поведение стабильной версии для забаненных, но без "замка", если вы хотите функционал терминала?
-  // Нет, вы просили "чтобы у терминала был полный функционал".
-  // В админ-режиме (adminMode) терминал доступен. Если админ сам себя забанит (тестовый юзер), он все равно увидит терминал.
 
   const filteredRides = useMemo(() => {
     return rides.filter(ride => {
