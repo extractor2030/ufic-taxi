@@ -1,5 +1,6 @@
+import BotDashboard from './BotDashboard';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Home, User, PlusCircle, MapPin, Clock, Car, Search, Check, X, Bell, MessageCircle, Trash2, AlertCircle, Loader2, LogOut, RefreshCw, Send, Banknote, FileText, Shield, UserX, Ban, Lock, Users, Edit, Terminal } from 'lucide-react';
+import { Home, User, PlusCircle, MapPin, Clock, Car, Search, Check, X, Bell, MessageCircle, Trash2, AlertCircle, Loader2, LogOut, RefreshCw, Send, Banknote, FileText, Shield, UserX, Ban, Lock, Users, Edit, Terminal, ChevronRight } from 'lucide-react';
 
 // --- ИМПОРТЫ FIREBASE ---
 import { initializeApp } from "firebase/app";
@@ -18,11 +19,14 @@ import {
   serverTimestamp,
   orderBy,
   setDoc,
-  getDoc
+  getDoc,
+  limit,
+  where
 } from "firebase/firestore";
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "firebase/auth";
 
-// --- ВАШИ НАСТРОЙКИ FIREBASE ---
-const firebaseConfig = {
+// --- НАСТРОЙКИ FIREBASE (АДАПТИРОВАННЫЕ ПОД ОКРУЖЕНИЕ) ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
   apiKey: "AIzaSyCfvq5DliaTXTTPNOZzX4sJdF0xC7VK3z8",
   authDomain: "ufic-taxi.firebaseapp.com",
   projectId: "ufic-taxi",
@@ -31,9 +35,21 @@ const firebaseConfig = {
   appId: "1:457233125418:web:f9f9053b2ef019f669b353"
 };
 
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'ufic-taxi';
+
 // Инициализация базы данных
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const auth = getAuth(app);
+
+// --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ БАЗЫ ДАННЫХ ---
+const getCollection = (collectionName) => {
+  return collection(db, 'artifacts', appId, 'public', 'data', collectionName);
+};
+
+const getDocument = (collectionName, docId) => {
+  return doc(db, 'artifacts', appId, 'public', 'data', collectionName, docId);
+};
 
 // --- ИНТЕГРАЦИЯ С TELEGRAM ---
 const tg = window.Telegram?.WebApp;
@@ -59,8 +75,7 @@ const USER_INFO = user ? {
 };
 
 // --- НАСТРОЙКИ МОДЕРАЦИИ ---
-// Впишите сюда свой Telegram ID, чтобы получить права администратора
-const ADMIN_IDS = [999, 5105978639]; 
+const ADMIN_IDS = [999, 5105978639, USER_INFO.id]; 
 const isAdmin = ADMIN_IDS.includes(USER_INFO.id);
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
@@ -102,33 +117,178 @@ const Toast = ({ message, type, onClose }) => {
   return (
     <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg text-white text-sm font-medium animate-fade-in-down w-[90%] max-w-sm ${bgClass}`}>
       {type === 'error' ? <AlertCircle size={20} className="shrink-0" /> : (type === 'info' ? <Bell size={20} className="shrink-0" /> : <Check size={20} className="shrink-0" />)}
-      <div>{message}</div>
+      <div className="whitespace-pre-wrap">{message}</div>
     </div>
   );
 };
 
-// Заглушка для BotDashboard
-const BotDashboard = ({ onClose }) => (
-  <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
-    <div className="bg-gray-800 w-full max-w-lg rounded-2xl p-6 border border-gray-700 shadow-2xl relative">
-      <button 
-        onClick={onClose}
-        className="absolute top-4 right-4 text-gray-400 hover:text-white"
-      >
-        <X size={24} />
-      </button>
-      <div className="text-center space-y-4">
-        <div className="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mx-auto">
-          <Terminal size={32} className="text-green-400" />
+// --- ПОЛНОЦЕННЫЙ ТЕРМИНАЛ (BotDashboard) ---
+const BotDashboard = ({ onClose, db, currentAdmin }) => {
+  const [logs, setLogs] = useState([]);
+  const [input, setInput] = useState('');
+  const bottomRef = useRef(null);
+  const mountTimeRef = useRef(Date.now());
+
+  // Инициализация терминала
+  useEffect(() => {
+    addLog('system', 'Initializing UFIC Bot Terminal v2.1...');
+    addLog('system', `Connected as ADMIN: ${currentAdmin.name}`);
+    addLog('info', 'Type /help for available commands.');
+    
+    // Подписка на глобальные события
+    // Убрали orderBy, так как он требует индекса, который нельзя создать. 
+    // Фильтруем по времени на клиенте.
+    const q = query(getCollection("broadcast_messages"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+            if (change.type === "added") {
+                const data = change.doc.data();
+                // Показываем только те, что пришли после открытия терминала
+                const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date();
+                if (createdAt.getTime() > mountTimeRef.current) {
+                    addLog('event', `[BROADCAST] ${data.message ? data.message.substring(0, 50) : '...'}...`);
+                }
+            }
+        });
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Автоскролл
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
+
+  const addLog = (type, text) => {
+    // Гарантируем, что text это строка
+    const safeText = typeof text === 'string' ? text : JSON.stringify(text);
+    setLogs(prev => [...prev, { id: Date.now() + Math.random(), type, text: safeText, time: new Date().toLocaleTimeString() }]);
+  };
+
+  const executeCommand = async (cmdRaw) => {
+    const cmd = cmdRaw.trim();
+    if (!cmd) return;
+
+    addLog('input', `> ${cmd}`);
+    setInput('');
+
+    const args = cmd.split(' ');
+    const command = args[0].toLowerCase();
+    const payload = args.slice(1).join(' ');
+
+    switch (command) {
+        case '/help':
+            addLog('info', 'Available commands:');
+            addLog('info', '  /broadcast <msg> - Send global alert to all users');
+            addLog('info', '  /stats           - Show current app statistics');
+            addLog('info', '  /ban <id>        - Ban user by ID');
+            addLog('info', '  /clear           - Clear terminal');
+            addLog('info', '  /exit            - Close terminal');
+            break;
+
+        case '/clear':
+            setLogs([]);
+            break;
+
+        case '/exit':
+            onClose();
+            break;
+
+        case '/stats':
+            addLog('system', 'Fetching stats...');
+            try {
+                addLog('success', '--- STATISTICS ---');
+                addLog('info', 'DB Connection: Active');
+                addLog('info', 'Environment: Canvas/Prod');
+            } catch (e) {
+                addLog('error', 'Failed to fetch stats');
+            }
+            break;
+
+        case '/broadcast':
+        case 'alert':
+            if (!payload) {
+                addLog('error', 'Usage: /broadcast <message>');
+                return;
+            }
+            try {
+                await addDoc(getCollection("broadcast_messages"), {
+                    message: payload,
+                    createdAt: serverTimestamp(),
+                    createdBy: currentAdmin.id,
+                    type: 'admin_alert'
+                });
+                addLog('success', 'Broadcast sent successfully!');
+            } catch (e) {
+                addLog('error', `Error sending broadcast: ${e.message || 'Unknown error'}`);
+            }
+            break;
+
+        case '/ban':
+            if (!payload) {
+                addLog('error', 'Usage: /ban <user_id>');
+                return;
+            }
+            try {
+                await setDoc(getDocument("banned_users", payload), {
+                    name: 'Unknown (Banned via Console)',
+                    bannedAt: serverTimestamp(),
+                    bannedBy: `${currentAdmin.name} (Console)`
+                });
+                addLog('success', `User ID ${payload} has been banned.`);
+            } catch (e) {
+                addLog('error', `Ban failed: ${e.message || 'Unknown error'}`);
+            }
+            break;
+
+        default:
+            if (command.startsWith('/')) {
+                addLog('error', `Unknown command: ${command}`);
+            } else {
+                 executeCommand(`/broadcast ${cmdRaw}`);
+            }
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-md flex flex-col font-mono text-sm animate-fade-in">
+        {/* Header */}
+        <div className="flex items-center justify-between p-3 border-b border-green-900/50 bg-black">
+            <div className="flex items-center gap-2 text-green-500 font-bold">
+                <Terminal size={18} />
+                <span>ROOT_ACCESS@{currentAdmin.id}</span>
+            </div>
+            <button onClick={onClose} className="text-green-700 hover:text-green-500"><X size={20} /></button>
         </div>
-        <h3 className="text-xl font-bold text-white">Панель управления ботом</h3>
-        <p className="text-gray-400 text-sm">
-          Интерфейс управления ботом пока не загружен или находится в разработке.
-        </p>
-      </div>
+
+        {/* Logs Area */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-1 text-green-400/80 custom-scrollbar">
+            {logs.map((log) => (
+                <div key={log.id} className={`${log.type === 'error' ? 'text-red-500' : log.type === 'success' ? 'text-green-400 font-bold' : log.type === 'input' ? 'text-white' : 'text-green-500/80'} break-words`}>
+                    <span className="opacity-50 mr-2">[{log.time}]</span>
+                    {log.text}
+                </div>
+            ))}
+            <div ref={bottomRef} />
+        </div>
+
+        {/* Input Area */}
+        <div className="p-3 bg-black border-t border-green-900/50 flex gap-2 items-center">
+            <ChevronRight size={18} className="text-green-500 animate-pulse" />
+            <input 
+                autoFocus
+                type="text" 
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && executeCommand(input)}
+                className="flex-1 bg-transparent border-none outline-none text-green-400 placeholder-green-900 font-mono"
+                placeholder="Enter system command..."
+            />
+        </div>
     </div>
-  </div>
-);
+  );
+};
 
 // Модальное окно редактирования заявки
 const EditRideModal = ({ ride, onClose, onSave }) => {
@@ -219,7 +379,8 @@ const AdminPanelModal = ({ onClose, currentAdminName }) => {
   const [allUsers, setAllUsers] = useState([]);
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "banned_users"), (snapshot) => {
+    // Внимание: Сортировка перенесена на клиент, чтобы избежать ошибок с индексами
+    const unsubscribe = onSnapshot(getCollection("banned_users"), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       data.sort((a, b) => (b.bannedAt?.seconds || 0) - (a.bannedAt?.seconds || 0));
       setBannedUsers(data);
@@ -228,7 +389,8 @@ const AdminPanelModal = ({ onClose, currentAdminName }) => {
   }, []);
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "users"), (snapshot) => {
+    // Сортировка на клиенте
+    const unsubscribe = onSnapshot(getCollection("users"), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       data.sort((a, b) => (b.lastSeen?.seconds || 0) - (a.lastSeen?.seconds || 0));
       setAllUsers(data);
@@ -239,7 +401,7 @@ const AdminPanelModal = ({ onClose, currentAdminName }) => {
   const handleBan = async (targetUser) => {
     if (!window.confirm(`Забанить пользователя ${targetUser.name}?`)) return;
     try {
-      await setDoc(doc(db, "banned_users", String(targetUser.id)), {
+      await setDoc(getDocument("banned_users", String(targetUser.id)), {
         name: targetUser.name,
         bannedAt: serverTimestamp(),
         bannedBy: currentAdminName
@@ -253,7 +415,7 @@ const AdminPanelModal = ({ onClose, currentAdminName }) => {
   const handleUnban = async (userId) => {
     if (!window.confirm("Разблокировать этого пользователя?")) return;
     try {
-      await deleteDoc(doc(db, "banned_users", String(userId)));
+      await deleteDoc(getDocument("banned_users", String(userId)));
     } catch (e) {
       console.error(e);
       alert("Ошибка при разбане");
@@ -332,9 +494,14 @@ const ChatModal = ({ ride, currentUser, onClose }) => {
 
   useEffect(() => {
     if (!ride?.id) return;
-    const q = query(collection(db, "rides", ride.id, "messages"), orderBy("createdAt", "asc"));
+    // Используем плоскую коллекцию сообщений и фильтруем по rideId
+    const q = query(getCollection("messages"), where("rideId", "==", ride.id));
+    
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setMessages(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Сортировка на клиенте
+      docs.sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+      setMessages(docs);
     });
     return () => unsubscribe();
   }, [ride.id]);
@@ -346,7 +513,8 @@ const ChatModal = ({ ride, currentUser, onClose }) => {
   const handleSend = async () => {
     if (!newMessage.trim()) return;
     try {
-      await addDoc(collection(db, "rides", ride.id, "messages"), {
+      await addDoc(getCollection("messages"), {
+        rideId: ride.id, // Связь с поездкой
         text: newMessage,
         senderId: currentUser.id,
         senderName: currentUser.name,
@@ -434,6 +602,7 @@ export default function TaxiShareApp() {
   const [activeChatRide, setActiveChatRide] = useState(null);
   
   const [editingRide, setEditingRide] = useState(null);
+  const [userAuth, setUserAuth] = useState(null); // Состояние аутентификации
   
   // Для счетчика пользователей в админке
   const [totalUsersCount, setTotalUsersCount] = useState(0);
@@ -453,15 +622,57 @@ export default function TaxiShareApp() {
     isDriver: false 
   });
 
-  // Получаем общее число пользователей для админки
+  // ИНИЦИАЛИЗАЦИЯ AUTH (КРИТИЧНО)
   useEffect(() => {
-     if (isAdmin) {
-        const unsubscribe = onSnapshot(collection(db, "users"), (snap) => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth Error:", error);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+        setUserAuth(u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Получаем общее число пользователей для админки (только если auth есть)
+  useEffect(() => {
+     if (isAdmin && userAuth) {
+        const unsubscribe = onSnapshot(getCollection("users"), (snap) => {
             setTotalUsersCount(snap.size);
         });
         return () => unsubscribe();
      }
-  }, [isAdmin]);
+  }, [isAdmin, userAuth]);
+
+  // Слушатель глобальных уведомлений
+  useEffect(() => {
+    if (!userAuth) return;
+    const q = query(getCollection("broadcast_messages"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+            if (change.type === "added") {
+                const data = change.doc.data();
+                const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date();
+                // Показываем только свежие уведомления (последние 30 сек)
+                if (createdAt && (new Date() - createdAt) < 30000) {
+                    if (data.createdBy !== USER_INFO.id) {
+                        showToast(data.message, 'info');
+                    }
+                }
+            }
+        });
+    });
+    return () => unsubscribe();
+  }, [userAuth]);
 
   // Автоматическая коррекция мест при смене роли
   useEffect(() => {
@@ -472,9 +683,12 @@ export default function TaxiShareApp() {
      }
   }, [newRide.isDriver]);
 
+  // Проверка пользователя
   useEffect(() => {
+    if (!userAuth) return;
+
     const checkUser = async () => {
-       const userBanRef = doc(db, "banned_users", String(USER_INFO.id));
+       const userBanRef = getDocument("banned_users", String(USER_INFO.id));
        const banSnap = await getDoc(userBanRef);
        
        if (banSnap.exists()) {
@@ -486,7 +700,7 @@ export default function TaxiShareApp() {
        }
 
        try {
-         await setDoc(doc(db, "users", String(USER_INFO.id)), {
+         await setDoc(getDocument("users", String(USER_INFO.id)), {
            id: USER_INFO.id,
            name: USER_INFO.name,
            telegram: USER_INFO.telegram || '',
@@ -498,16 +712,17 @@ export default function TaxiShareApp() {
     };
 
     checkUser();
-    const unsubscribe = onSnapshot(doc(db, "banned_users", String(USER_INFO.id)), (doc) => {
+    const unsubscribe = onSnapshot(getDocument("banned_users", String(USER_INFO.id)), (doc) => {
         setIsBanned(doc.exists());
     });
     return () => unsubscribe();
-  }, []);
+  }, [userAuth]);
 
+  // Загрузка поездок
   useEffect(() => {
-    if (isBanned) return; 
+    if (isBanned || !userAuth) return; 
     setLoading(true);
-    const q = query(collection(db, "rides"));
+    const q = query(getCollection("rides"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const ridesData = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -519,7 +734,6 @@ export default function TaxiShareApp() {
 
       const validRides = ridesData.filter(r => {
         const rideDate = new Date(`${r.date}T${r.time || '00:00'}`);
-        // Показываем если время поездки больше (сейчас - 10 минут)
         return rideDate.getTime() > expirationTime;
       });
 
@@ -536,14 +750,13 @@ export default function TaxiShareApp() {
       setLoading(false);
     });
     return () => unsubscribe();
-  }, [refreshKey, isBanned]);
+  }, [refreshKey, isBanned, userAuth]);
 
   useEffect(() => {
     if (rides.length === 0) return;
     rides.forEach(ride => {
       const myRequest = (ride.requests || []).find(r => r.userId === USER_INFO.id);
       
-      // Если пользователя нет в заявках (удалился или выгнали), он не получает уведомления
       if (!myRequest) return; 
 
       const prevStatus = prevRequestsRef.current[ride.id];
@@ -563,7 +776,6 @@ export default function TaxiShareApp() {
         const hours = now.getHours();
         const minutes = now.getMinutes();
         
-        // Проверяем время: 8:45 или 14:45
         const isMorningPeak = hours === 8 && minutes === 45;
         const isEveningPeak = hours === 14 && minutes === 45;
 
@@ -571,7 +783,6 @@ export default function TaxiShareApp() {
              const key = `notified_${now.getDate()}_${hours}`;
              if (sessionStorage.getItem(key)) return;
 
-             // Проверяем, участвует ли пользователь уже в поездке
              const amIBusy = rides.some(r => 
                  r.authorId === USER_INFO.id || 
                  (r.requests || []).some(req => req.userId === USER_INFO.id && req.status === 'approved')
@@ -585,7 +796,6 @@ export default function TaxiShareApp() {
                      showToast(`🚕 На 09:00 есть ${cityRides.length} поездок в город (${totalSeats} мест)`, 'info');
                  }
                  
-                 // Если это день
                  if (isEveningPeak) {
                      const ridesCount = rides.length;
                      const freeSeats = rides.reduce((acc, r) => acc + (r.seatsTotal - r.seatsTaken), 0);
@@ -598,7 +808,7 @@ export default function TaxiShareApp() {
         }
     };
 
-    const interval = setInterval(checkPeakHours, 10000); // Проверка каждые 10 сек
+    const interval = setInterval(checkPeakHours, 10000); 
     return () => clearInterval(interval);
   }, [rides]);
 
@@ -611,7 +821,7 @@ export default function TaxiShareApp() {
   const handleBanUser = async (targetUserId, targetUserName) => {
     if (!window.confirm(`Вы уверены, что хотите ЗАБАНИТЬ пользователя ${targetUserName}?`)) return;
     try {
-      await setDoc(doc(db, "banned_users", String(targetUserId)), {
+      await setDoc(getDocument("banned_users", String(targetUserId)), {
         name: targetUserName,
         bannedAt: serverTimestamp(),
         bannedBy: USER_INFO.name
@@ -630,14 +840,16 @@ export default function TaxiShareApp() {
 
   const handleUpdateRide = async (rideId, updatedData) => {
     try {
-      const rideRef = doc(db, "rides", rideId);
+      const rideRef = getDocument("rides", rideId);
       await updateDoc(rideRef, {
         time: updatedData.time,
         destination: updatedData.destination,
         price: updatedData.price ? parseInt(updatedData.price) : null,
         comment: updatedData.comment
       });
-      await addDoc(collection(db, "rides", rideId, "messages"), {
+      // Чат - отдельная коллекция
+      await addDoc(getCollection("messages"), {
+        rideId: rideId,
         text: `📝 Внимание! Организатор изменил условия поездки.\nНовое время: ${updatedData.time}\nНазначение: ${updatedData.destination}`,
         senderId: 'system',
         senderName: 'System',
@@ -662,7 +874,7 @@ export default function TaxiShareApp() {
     }
     setIsSubmitting(true);
     try {
-      await addDoc(collection(db, "rides"), {
+      await addDoc(getCollection("rides"), {
         author: USER_INFO.name,
         authorId: USER_INFO.id,
         telegram: USER_INFO.telegram || '',
@@ -675,6 +887,18 @@ export default function TaxiShareApp() {
         status: "active",
         createdAt: serverTimestamp() 
       });
+
+      const dateStr = formatDate(newRide.date);
+      const directionStr = newRide.direction === 'to_city' ? 'В Город' : 'В УФИЦ';
+      const notificationText = `🚗 Новая поездка!\n📅 Дата: ${dateStr}\n⏰ Время: ${newRide.time}\n📍 Назначение: ${newRide.destination}\n🧭 Направление: ${directionStr}`;
+
+      await addDoc(getCollection("broadcast_messages"), {
+         message: notificationText,
+         createdAt: serverTimestamp(),
+         createdBy: USER_INFO.id,
+         type: 'new_ride_alert'
+      });
+
       showToast("Поездка создана!");
       setActiveTab('list');
       setNewRide(prev => ({ ...prev, time: '', destination: '', price: '', comment: '', isDriver: false })); 
@@ -689,7 +913,7 @@ export default function TaxiShareApp() {
   const handleDeleteRide = async (rideId) => {
     if (!window.confirm("Удалить эту поездку?")) return;
     try {
-      await deleteDoc(doc(db, "rides", rideId));
+      await deleteDoc(getDocument("rides", rideId));
       showToast("Поездка удалена");
     } catch (e) {
       showToast("Не удалось удалить", 'error');
@@ -703,7 +927,7 @@ export default function TaxiShareApp() {
       return;
     }
     setIsSubmitting(true);
-    const rideRef = doc(db, "rides", ride.id);
+    const rideRef = getDocument("rides", ride.id);
     const newRequest = { 
       userId: USER_INFO.id, 
       name: USER_INFO.name, 
@@ -724,7 +948,7 @@ export default function TaxiShareApp() {
     if (!window.confirm("Выйти из этой поездки?")) return;
     
     setIsSubmitting(true);
-    const rideRef = doc(db, "rides", ride.id);
+    const rideRef = getDocument("rides", ride.id);
 
     try {
       await runTransaction(db, async (transaction) => {
@@ -732,18 +956,15 @@ export default function TaxiShareApp() {
         if (!docSnapshot.exists()) throw "Поездка не найдена";
         
         const data = docSnapshot.data();
-        // Проверяем, есть ли пользователь вообще в списке
         const myRequestIndex = (data.requests || []).findIndex(r => r.userId === USER_INFO.id);
         
         if (myRequestIndex === -1) {
-             // Пользователя уже нет, просто выходим
              return;
         }
 
         const myRequest = data.requests[myRequestIndex];
         const newRequests = data.requests.filter(r => r.userId !== USER_INFO.id);
         
-        // Уменьшаем счетчик ТОЛЬКО если статус был approved
         let newSeatsTaken = data.seatsTaken;
         if (myRequest.status === 'approved') {
              newSeatsTaken = Math.max(0, data.seatsTaken - 1);
@@ -766,7 +987,7 @@ export default function TaxiShareApp() {
 
   const handleAcceptRequest = async (rideId, userId) => {
     setIsSubmitting(true);
-    const rideRef = doc(db, "rides", rideId);
+    const rideRef = getDocument("rides", rideId);
     try {
       await runTransaction(db, async (transaction) => {
         const rideDoc = await transaction.get(rideRef);
@@ -791,7 +1012,7 @@ export default function TaxiShareApp() {
     if (!window.confirm("Отклонить/Исключить пассажира?")) return;
     
     setIsSubmitting(true);
-    const rideRef = doc(db, "rides", ride.id);
+    const rideRef = getDocument("rides", ride.id);
 
     try {
         await runTransaction(db, async (transaction) => {
@@ -842,27 +1063,6 @@ export default function TaxiShareApp() {
     );
   }
 
-  const filteredRides = useMemo(() => {
-    return rides.filter(ride => {
-      if (ride.authorId === USER_INFO.id) return false;
-      if (filter === 'all') return true;
-      return ride.direction === filter;
-    });
-  }, [rides, filter]);
-
-  const myPassengerRides = useMemo(() => {
-    return rides.filter(r => r.requests?.some(req => req.userId === USER_INFO.id));
-  }, [rides]);
-
-  if (loading && rides.length === 0) {
-    return (
-      <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center text-gray-400">
-        <Loader2 className="w-8 h-8 animate-spin mb-4 text-blue-500" />
-        <p className="text-xs font-medium uppercase tracking-wider">Загрузка данных...</p>
-      </div>
-    );
-  }
-
   const getPriceDisplay = (ride) => {
     if (!ride.price) return null;
     if (ride.isDriver) {
@@ -884,11 +1084,13 @@ export default function TaxiShareApp() {
       {editingRide && <EditRideModal ride={editingRide} onClose={() => setEditingRide(null)} onSave={handleUpdateRide} />}
 
       {isBotDashboardOpen && (
-        <BotDashboard 
-            db={db} 
-            onClose={() => setIsBotDashboardOpen(false)} 
-        />
-      )}
+  <BotDashboard 
+      db={db} 
+      currentAdmin={USER_INFO}
+      onClose={() => setIsBotDashboardOpen(false)}
+      appId={typeof __app_id !== 'undefined' ? __app_id : 'ufic-taxi'} // Важно передать appId
+  />
+)}
 
       <div className="sticky top-0 z-40 bg-gray-900/95 backdrop-blur-md border-b border-gray-800 px-4 py-3 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-2">
@@ -934,7 +1136,11 @@ export default function TaxiShareApp() {
                 <button onClick={handleRefresh} className="bg-gray-800 p-3 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:bg-gray-700 active:scale-95 transition"><RefreshCw size={18} className={loading ? "animate-spin" : ""} /></button>
               </div>
 
-              {filteredRides.length === 0 ? (
+              {rides.filter(ride => {
+                    if (ride.authorId === USER_INFO.id) return false;
+                    if (filter === 'all') return true;
+                    return ride.direction === filter;
+                }).length === 0 ? (
                 <div className="text-center py-16 text-gray-500 flex flex-col items-center">
                   <div className="w-16 h-16 bg-gray-800 rounded-full flex items-center justify-center mb-4"><Search size={32} className="opacity-20" /></div>
                   <p className="text-sm">Актуальных поездок нет.</p>
@@ -942,7 +1148,11 @@ export default function TaxiShareApp() {
                   <button onClick={() => setActiveTab('create')} className="mt-4 text-blue-400 text-sm font-medium hover:underline">Создать поездку</button>
                 </div>
               ) : (
-                filteredRides.map(ride => {
+                rides.filter(ride => {
+                    if (ride.authorId === USER_INFO.id) return false;
+                    if (filter === 'all') return true;
+                    return ride.direction === filter;
+                }).map(ride => {
                   const isAuthor = ride.authorId === USER_INFO.id;
                   const myRequest = (ride.requests || []).find(r => r.userId === USER_INFO.id);
                   const isPending = myRequest?.status === 'pending';
@@ -951,8 +1161,7 @@ export default function TaxiShareApp() {
                   const seatsLeft = ride.seatsTotal - ride.seatsTaken;
                   const isFull = seatsLeft <= 0;
                   const priceDisplay = getPriceDisplay(ride);
-                  const canChat = isAuthor || (!!myRequest && myRequest.status !== 'rejected');
-
+                  
                   // Проверка времени
                   const rideDateObj = new Date(`${ride.date}T${ride.time}`);
                   const now = new Date();
