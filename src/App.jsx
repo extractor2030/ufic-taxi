@@ -136,6 +136,7 @@ function BotDashboard({ db, onClose }) {
   const [logs, setLogs] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [token, setToken] = useState(() => localStorage.getItem('bot_token') || '');
+  const [manualMessage, setManualMessage] = useState("");
   
   const ridesCache = useRef({});
   const unsubscribers = useRef([]);
@@ -207,6 +208,16 @@ function BotDashboard({ db, onClose }) {
       } catch (e) {
           addLog(`Ошибка при рассылке: ${e.message}`, "error");
       }
+  };
+
+  const handleManualBroadcast = () => {
+    if (!manualMessage.trim()) return;
+    if (!window.confirm("Вы уверены, что хотите отправить это сообщение ВСЕМ пользователям?")) return;
+    
+    // Добавляем префикс, чтобы было понятно, что это от админа
+    const msg = `📢 <b>Объявление от Админа:</b>\n\n${manualMessage}`;
+    broadcastToAllUsers(msg);
+    setManualMessage("");
   };
 
   const checkScheduledAlerts = async () => {
@@ -433,14 +444,37 @@ function BotDashboard({ db, onClose }) {
         <button onClick={onClose} className="text-gray-400 hover:text-white px-3 py-1 rounded hover:bg-gray-700">Закрыть</button>
       </div>
 
-      <div className="p-4 bg-gray-800/50 flex gap-4 border-b border-gray-700 shrink-0">
-        <input type="text" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Bot Token" className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white" disabled={isRunning} />
-        <button onClick={saveToken} disabled={isRunning} className="px-3 bg-gray-700 rounded hover:bg-gray-600"><Save size={20}/></button>
-        {!isRunning ? (
-            <button onClick={startBot} className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 rounded font-bold text-white"><Play size={18} /> START</button>
-        ) : (
-            <button onClick={stopBot} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 rounded font-bold text-white"><Square size={18} /> STOP</button>
-        )}
+      <div className="p-4 bg-gray-800/50 border-b border-gray-700 shrink-0 space-y-3">
+        <div className="flex gap-4">
+            <input type="text" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Bot Token" className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white text-xs" disabled={isRunning} />
+            <button onClick={saveToken} disabled={isRunning} className="px-3 bg-gray-700 rounded hover:bg-gray-600"><Save size={18}/></button>
+            {!isRunning ? (
+                <button onClick={startBot} className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 rounded font-bold text-white text-xs"><Play size={16} /> START</button>
+            ) : (
+                <button onClick={stopBot} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 rounded font-bold text-white text-xs"><Square size={16} /> STOP</button>
+            )}
+        </div>
+        
+        <div className="flex gap-2 items-end">
+            <div className="flex-1">
+                <div className="text-[10px] text-gray-400 mb-1 uppercase font-bold">Массовая рассылка (HTML)</div>
+                <input 
+                    type="text" 
+                    value={manualMessage} 
+                    onChange={(e) => setManualMessage(e.target.value)} 
+                    placeholder="Сообщение для всех пользователей..." 
+                    className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white text-xs focus:border-blue-500 outline-none"
+                    disabled={!isRunning} 
+                />
+            </div>
+            <button 
+                onClick={handleManualBroadcast} 
+                disabled={!isRunning || !manualMessage.trim()} 
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded font-bold text-white disabled:bg-gray-700 disabled:text-gray-500 text-xs flex items-center gap-1 h-[34px]"
+            >
+                <Send size={14} /> Отправить всем
+            </button>
+        </div>
       </div>
 
       <div className="flex-1 bg-black p-4 overflow-y-auto font-mono text-xs custom-scrollbar">
