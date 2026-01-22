@@ -55,6 +55,9 @@ const getTelegramApp = () => {
 
 const tg = getTelegramApp();
 
+// Ссылка на ваше приложение (замените на реальную ссылку вашего бота/приложения)
+const APP_LINK = "https://t.me/UFIC_TAXI_BOT/app"; 
+
 if (tg) {
   tg.ready();
   tg.expand();
@@ -172,7 +175,13 @@ function BotDashboard({ db, onClose }) {
           body: JSON.stringify({
               chat_id: chatId,
               text: text,
-              parse_mode: 'HTML'
+              parse_mode: 'HTML',
+              // Добавляем кнопку для перехода в приложение
+              reply_markup: {
+                  inline_keyboard: [
+                      [{ text: "🚕 Открыть приложение", url: APP_LINK }]
+                  ]
+              }
           })
       });
       
@@ -376,8 +385,6 @@ function BotDashboard({ db, onClose }) {
                         addLog(`🆕 Заявка от ${newReq.name}`, 'warning');
                         sendTelegramMessage(rideData.authorId, 
                             `🚕 <b>Новая заявка вам!</b>\n👤 <b>${newReq.name}</b> хочет поехать.\n📅 ${dateFormatted}\n📍 ${rideData.destination}\n⏰ ${rideData.time}`);
-                        
-                        // БЛОК ОБЩЕГО УВЕДОМЛЕНИЯ О ЗАЯВКЕ УДАЛЕН ПО ПРОСЬБЕ
                     }
                     
                     // --- ИЗМЕНЕНИЕ СТАТУСА (ЛИЧНОЕ УВЕДОМЛЕНИЕ) ---
