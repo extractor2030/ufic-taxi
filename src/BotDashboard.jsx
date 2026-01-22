@@ -1,195 +1,337 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Terminal, X, ChevronRight, AlertCircle, Check } from 'lucide-react';
-import { 
-  collection, 
-  addDoc, 
-  onSnapshot, 
-  query, 
-  serverTimestamp, 
-  setDoc,
-  doc 
-} from "firebase/firestore";
+import { collection, collectionGroup, query, where, orderBy, onSnapshot, updateDoc, doc, getDoc, getDocs } from "firebase/firestore";
+import { Terminal, Play, Square, Save, Trash2, Bell } from 'lucide-react';
 
-// Вспомогательная функция для путей (как в App.jsx), чтобы уведомления доходили до пользователей
-const getCollection = (db, appId, collectionName) => {
-  return collection(db, 'artifacts', appId, 'public', 'data', collectionName);
-};
-
-const getDocument = (db, appId, collectionName, docId) => {
-  return doc(db, 'artifacts', appId, 'public', 'data', collectionName, docId);
-};
-
-const BotDashboard = ({ onClose, db, currentAdmin, appId = 'ufic-taxi' }) => {
+export default function BotDashboard({ db, onClose }) {
   const [logs, setLogs] = useState([]);
-  const [input, setInput] = useState('');
-  const bottomRef = useRef(null);
-  const mountTimeRef = useRef(Date.now());
+  const [isRunning, setIsRunning] = useState(false);
+  // Токен храним в localStorage, чтобы не вводить каждый раз. По умолчанию используем ваш токен.
+  const [token, setToken] = useState(localStorage.getItem('bot_token') || '7275058311:AAGUfoC3ng1ldEDpD1JqMyoPReYw715CIn0');
+  
+  const ridesCache = useRef({});
+  const unsubscribers = useRef([]);
 
-  // Логирование в окно терминала
-  const addLog = (type, text) => {
-    const safeText = typeof text === 'string' ? text : JSON.stringify(text);
-    setLogs(prev => [...prev, { 
-      id: Date.now() + Math.random(), 
-      type, 
-      text: safeText, 
-      time: new Date().toLocaleTimeString() 
-    }]);
+  const addLog = (text, type = 'info') => {
+    const time = new Date().toLocaleTimeString();
+    setLogs(prev => [`[${time}] ${text}`, ...prev].slice(0, 50)); // Храним последние 50 логов
   };
 
-  // Инициализация и прослушка событий
-  useEffect(() => {
-    addLog('system', 'Initializing UFIC Bot Terminal v2.2 (External)...');
-    
-    if (!currentAdmin) {
-        addLog('error', 'Auth Error: Admin user not identified.');
-        return;
-    }
+  const saveToken = () => {
+    localStorage.setItem('bot_token', token);
+    addLog("Токен сохранен в браузере", 'success');
+  };
 
-    addLog('system', `Connected as ADMIN: ${currentAdmin.name || 'Unknown'}`);
-    addLog('info', 'Type /help for available commands.');
-    
-    if (!db) {
-        addLog('error', 'Database connection failed.');
-        return;
+  const sendTelegramMessage = async (chatId, text) => {
+    if (!chatId || !token) return;
+    try {
+      addLog(`📤 Отправка сообщения ID: ${chatId}...`);
+      const url = `https://api.telegram.org/bot${token}/sendMessage`;
+      const response = await fetch(url, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+              chat_id: chatId,
+              text: text,
+              parse_mode: 'HTML'
+          })
+      });
+      const data = await response.json();
+      if (data.ok) addLog(`✅ Доставлено ID: ${chatId}`, 'success');
+      else addLog(`❌ Ошибка Telegram: ${data.description}`, 'error');
+    } catch (error) {
+      addLog(`❌ Ошибка сети: ${error.message}`, 'error');
     }
+  };
 
-    // Слушаем новые broadcast сообщения, чтобы видеть, что мы отправили
-    const q = query(getCollection(db, appId, "broadcast_messages"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-            if (change.type === "added") {
-                const data = change.doc.data();
-                // Безопасное получение даты
-                const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date();
+  const startBot = () => {
+    if (!token) return alert("Введите токен бота!");
+    setIsRunning(true);
+    addLog("🚀 Бот запущен! Слушаю события...");
+
+    // 1. СЛУШАЕМ СООБЩЕНИЯ
+    const botStartTime = new Date();
+    // Фильтруем сообщения, созданные ПОСЛЕ запуска бота
+    const qMessages = query(
+        collectionGroup(db, 'messages'), 
+        where('createdAt', '>', botStartTime),
+        orderBy('createdAt', 'asc')
+    );
+
+    const unsubMsg = onSnapshot(qMessages, (snapshot) => {
+        snapshot.docChanges().forEach(async (change) => {
+            if (change.type === 'added') {
+                const msg = change.doc.data();
+                if (msg.senderId === 'system') return;
                 
-                // Показываем только те, что пришли после открытия окна
-                if (createdAt.getTime() > mountTimeRef.current) {
-                    addLog('event', `[BROADCAST] ${data.message ? data.message.substring(0, 50) : '...'}...`);
+                addLog(`📝 Новое сообщение от ${msg.senderName}`);
+                
+                // Получаем ID поездки через ref родительского документа
+                const rideRef = change.doc.ref.parent.parent;
+                if (!rideRef) return;
+
+                // ВСЕГДА берем свежую версию документа поездки, чтобы проверить, кто еще там
+                // Это решает проблему "Зомби-уведомлений" для вышедших пассажиров
+                const rideSnap = await getDoc(rideRef);
+                if (!rideSnap.exists()) return;
+
+                const ride = rideSnap.data();
+                const recipients = new Set();
+                
+                // Добавляем автора поездки
+                if (ride.authorId !== msg.senderId) recipients.add(ride.authorId);
+                
+                // Добавляем ТОЛЬКО принятых пассажиров
+                if (ride.requests) {
+                    ride.requests.forEach(r => {
+                        if (r.status === 'approved' && r.userId !== msg.senderId) recipients.add(r.userId);
+                    });
                 }
+                
+                const text = `💬 <b>Новое сообщение</b>\nОт: ${msg.senderName}\n"${msg.text}"`;
+                recipients.forEach(id => sendTelegramMessage(id, text));
             }
         });
-    });
+    }, (error) => addLog(`Ошибка Messages: ${error.message}`, 'error'));
 
-    return () => unsubscribe();
-  }, [db, appId, currentAdmin]);
+    // 2. СЛУШАЕМ ЗАЯВКИ И ИХ СТАТУСЫ
+    const qRides = query(collection(db, 'rides'));
+    const unsubRides = onSnapshot(qRides, (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+            const rideData = change.doc.data();
+            const rideId = change.doc.id;
+            
+            // Если поездка только загрузилась, просто кэшируем её текущее состояние
+            if (change.type === 'added') {
+                ridesCache.current[rideId] = rideData.requests || [];
+            }
+            
+            // Если поездка изменилась (кто-то добавился или сменил статус)
+            if (change.type === 'modified') {
+                const oldRequests = ridesCache.current[rideId] || [];
+                const newRequests = rideData.requests || [];
 
-  // Автопрокрутка вниз
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
+                newRequests.forEach(req => {
+                    const oldReq = oldRequests.find(r => r.userId === req.userId);
+                    
+                    // СЦЕНАРИЙ А: НОВАЯ ЗАЯВКА (в старом кэше её не было)
+                    if (!oldReq) {
+                        addLog(`🆕 Новая заявка: ${req.name}`);
+                        sendTelegramMessage(rideData.authorId, 
+                            `🙋‍♂️ <b>Новая заявка!</b>\n\n${req.name} хочет поехать с вами в ${rideData.time}.\nЗайдите в приложение.`);
+                    }
+                    // СЦЕНАРИЙ Б: ИЗМЕНЕНИЕ СТАТУСА (заявка была, статус другой)
+                    else if (oldReq.status !== req.status) {
+                        addLog(`🔄 Смена статуса (${req.name}): ${req.status}`);
+                        if (req.status === 'approved') {
+                            sendTelegramMessage(req.userId, `✅ <b>Заявка принята!</b>\nПоездка в ${rideData.time}.`);
+                        } else if (req.status === 'rejected') {
+                            sendTelegramMessage(req.userId, `❌ <b>Заявка отклонена</b>\nВодитель отказал.`);
+                        }
+                    }
+                });
+                // Обновляем кэш
+                ridesCache.current[rideId] = newRequests;
+            }
+            if (change.type === 'removed') delete ridesCache.current[rideId];
+        });
+    }, (error) => addLog(`Ошибка Rides: ${error.message}`, 'error'));
 
-  const executeCommand = async (cmdRaw) => {
-    const cmd = cmdRaw.trim();
-    if (!cmd) return;
+    // 3. ТАЙМЕР НАПОМИНАНИЙ (Раз в минуту)
+    const checkReminders = async () => {
+         const now = new Date();
+         const targetTime = new Date(now.getTime() + 15 * 60000); // +15 мин
+         const timeStr = targetTime.toLocaleTimeString('ru-RU', {hour: '2-digit', minute:'2-digit'});
+         const dateStr = now.toISOString().split('T')[0];
 
-    addLog('input', `> ${cmd}`);
-    setInput('');
+         // Ищем поездки на сегодня
+         const qToday = query(collection(db, 'rides'), where('date', '==', dateStr));
+         
+         const unsubRemind = onSnapshot(qToday, (snap) => {
+             snap.docs.forEach(async d => {
+                 const r = d.data();
+                 // Проверяем совпадение времени и что еще не напоминали
+                 if (r.time === timeStr && !r.reminded) {
+                     addLog(`🔔 Напоминание: ${r.destination}`);
+                     
+                     const recipients = new Set();
+                     recipients.add(r.authorId);
+                     if (r.requests) {
+                        r.requests.forEach(req => {
+                            if(req.status==='approved') recipients.add(req.userId);
+                        });
+                     }
+                     
+                     recipients.forEach(id => sendTelegramMessage(id, `⏰ <b>Напоминание!</b>\nПоездка через 15 мин в ${r.destination}`));
+                     
+                     // Ставим метку, что напомнили
+                     try { 
+                        await updateDoc(doc(db, 'rides', d.id), { reminded: true }); 
+                     } catch(e) { 
+                        addLog("Ошибка записи reminded", 'error'); 
+                     }
+                 }
+             });
+             // Сразу отписываемся, это была разовая проверка
+             unsubRemind(); 
+         });
+    };
 
-    const args = cmd.split(' ');
-    const command = args[0].toLowerCase();
-    const payload = args.slice(1).join(' ');
+    // 4. ПИКОВАЯ РАССЫЛКА (08:45 и 14:45)
+    // Отправляет сводку за 15 минут до пика (9:00 и 15:00) всем, КРОМЕ тех кто уже в поездке
+    const checkPeakHours = async () => {
+        const now = new Date();
+        const hours = now.getHours();
+        const minutes = now.getMinutes();
+        
+        // Срабатываем только в 08:45 и 14:45
+        const isMorningPeak = hours === 8 && minutes === 45;
+        const isEveningPeak = hours === 14 && minutes === 45;
 
-    switch (command) {
-        case '/help':
-            addLog('info', 'Available commands:');
-            addLog('info', '  /broadcast <msg> - Send global alert to app users');
-            addLog('info', '  /ban <id>        - Ban user by ID');
-            addLog('info', '  /clear           - Clear terminal');
-            addLog('info', '  /exit            - Close terminal');
-            break;
+        if (!isMorningPeak && !isEveningPeak) return;
 
-        case '/clear':
-            setLogs([]);
-            break;
+        // Проверяем, чтобы не спамить (храним дату последней рассылки в localStorage для простоты)
+        const lastBroadcast = localStorage.getItem('last_peak_broadcast');
+        const currentBroadcastKey = `${now.getDate()}_${hours}:${minutes}`;
+        if (lastBroadcast === currentBroadcastKey) return;
 
-        case '/exit':
-            onClose();
-            break;
+        addLog(`📢 Начало пиковой рассылки (${hours}:${minutes})...`);
 
-        case '/broadcast':
-        case 'alert':
-            if (!payload) {
-                addLog('error', 'Usage: /broadcast <message>');
+        try {
+            // 1. Собираем статистику поездок на СЕГОДНЯ
+            const dateStr = now.toISOString().split('T')[0];
+            const ridesSnap = await getDocs(query(collection(db, 'rides'), where('date', '==', dateStr)));
+            
+            let ridesCount = 0;
+            let freeSeats = 0;
+            const activeUserIds = new Set(); // ID тех, кто уже едет (водители и пассажиры)
+
+            ridesSnap.docs.forEach(doc => {
+                const r = doc.data();
+                // Считаем только будущие поездки? Или все на день?
+                // Обычно пик интересует на ближайшее время, но посчитаем все активные на сегодня
+                ridesCount++;
+                freeSeats += (r.seatsTotal - r.seatsTaken);
+
+                // Собираем занятых юзеров
+                activeUserIds.add(r.authorId);
+                if (r.requests) {
+                    r.requests.forEach(req => {
+                        if (req.status === 'approved') activeUserIds.add(req.userId);
+                    });
+                }
+            });
+
+            if (ridesCount === 0) {
+                addLog("Нет поездок для рассылки, пропускаем.");
+                localStorage.setItem('last_peak_broadcast', currentBroadcastKey);
                 return;
             }
-            try {
-                // ВАЖНО: Используем getCollection с appId, чтобы путь совпал с тем, что слушает App.jsx
-                await addDoc(getCollection(db, appId, "broadcast_messages"), {
-                    message: payload,
-                    createdAt: serverTimestamp(),
-                    createdBy: currentAdmin.id,
-                    type: 'admin_alert'
-                });
-                addLog('success', 'Broadcast sent successfully! Users will see it in ~5 sec.');
-            } catch (e) {
-                addLog('error', `Error sending broadcast: ${e.message || 'Unknown error'}`);
-            }
-            break;
 
-        case '/ban':
-            if (!payload) {
-                addLog('error', 'Usage: /ban <user_id>');
-                return;
-            }
-            try {
-                await setDoc(getDocument(db, appId, "banned_users", payload), {
-                    name: 'Unknown (Banned via Console)',
-                    bannedAt: serverTimestamp(),
-                    bannedBy: `${currentAdmin.name} (Console)`
-                });
-                addLog('success', `User ID ${payload} has been banned.`);
-            } catch (e) {
-                addLog('error', `Ban failed: ${e.message || 'Unknown error'}`);
-            }
-            break;
+            // 2. Получаем всех пользователей
+            const usersSnap = await getDocs(collection(db, 'users'));
+            
+            // 3. Фильтруем получателей (все юзеры МИНУС те, кто уже занят)
+            const recipients = [];
+            usersSnap.docs.forEach(uDoc => {
+                const userData = uDoc.data();
+                const uid = userData.id || uDoc.id; // Иногда id внутри, иногда ключ
+                
+                // Если юзер не едет сегодня
+                if (!activeUserIds.has(uid)) {
+                    recipients.push(uid);
+                }
+            });
 
-        default:
-            if (command.startsWith('/')) {
-                addLog('error', `Unknown command: ${command}`);
-            } else {
-                 // Если набрали текст без команды, считаем это уведомлением (удобство)
-                 executeCommand(`/broadcast ${cmdRaw}`);
-            }
-    }
+            addLog(`Найдено ${recipients.length} получателей для рассылки.`);
+
+            const message = `🚕 <b>Актуально на сегодня!</b>\n\nСейчас создано поездок: <b>${ridesCount}</b>\nСвободных мест: <b>${freeSeats}</b>\n\nСамое время найти попутчиков! Заходите в приложение.`;
+
+            // 4. Отправляем
+            recipients.forEach(id => sendTelegramMessage(id, message));
+            
+            localStorage.setItem('last_peak_broadcast', currentBroadcastKey);
+            addLog("📢 Пиковая рассылка завершена.", 'success');
+
+        } catch (e) {
+            addLog(`Ошибка рассылки: ${e.message}`, 'error');
+        }
+    };
+
+    // Запускаем проверку каждую минуту
+    // Объединяем проверки
+    const masterTimer = () => {
+        checkReminders();
+        checkPeakHours();
+    };
+
+    const timerInterval = setInterval(masterTimer, 60000);
+
+    unsubscribers.current = [unsubMsg, unsubRides, () => clearInterval(timerInterval)];
+  };
+
+  const stopBot = () => {
+    unsubscribers.current.forEach(u => u());
+    unsubscribers.current = [];
+    setIsRunning(false);
+    addLog("🛑 Бот остановлен.");
   };
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-md flex flex-col font-mono text-sm animate-fade-in">
-        {/* Header */}
-        <div className="flex items-center justify-between p-3 border-b border-green-900/50 bg-black">
-            <div className="flex items-center gap-2 text-green-500 font-bold">
-                <Terminal size={18} />
-                <span>ROOT_ACCESS@{currentAdmin?.id || 'GUEST'}</span>
+    <div className="fixed inset-0 z-[100] bg-gray-900 text-white flex flex-col font-mono text-sm animate-fade-in">
+      {/* HEADER */}
+      <div className="bg-gray-800 p-4 border-b border-gray-700 flex justify-between items-center shadow-lg shrink-0">
+        <div className="flex items-center gap-3">
+            <Terminal className="text-green-400" />
+            <div>
+                <h2 className="font-bold text-lg">Панель Управления Ботом</h2>
+                <div className="text-xs text-gray-400">Держите эту вкладку открытой для работы бота</div>
             </div>
-            <button onClick={onClose} className="text-green-700 hover:text-green-500"><X size={20} /></button>
         </div>
+        <button onClick={onClose} className="text-gray-400 hover:text-white px-3 py-1 rounded hover:bg-gray-700">Закрыть</button>
+      </div>
 
-        {/* Logs Area */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-1 text-green-400/80 custom-scrollbar">
-            {logs.map((log) => (
-                <div key={log.id} className={`${log.type === 'error' ? 'text-red-500' : log.type === 'success' ? 'text-green-400 font-bold' : log.type === 'input' ? 'text-white' : 'text-green-500/80'} break-words`}>
-                    <span className="opacity-50 mr-2">[{log.time}]</span>
-                    {log.text}
-                </div>
-            ))}
-            <div ref={bottomRef} />
-        </div>
-
-        {/* Input Area */}
-        <div className="p-3 bg-black border-t border-green-900/50 flex gap-2 items-center">
-            <ChevronRight size={18} className="text-green-500 animate-pulse" />
+      {/* CONTROLS */}
+      <div className="p-4 bg-gray-800/50 flex flex-col md:flex-row gap-4 border-b border-gray-700 shrink-0">
+        <div className="flex-1 flex gap-2">
             <input 
-                autoFocus
                 type="text" 
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && executeCommand(input)}
-                className="flex-1 bg-transparent border-none outline-none text-green-400 placeholder-green-900 font-mono"
-                placeholder="Enter command (e.g., /broadcast Hello)..."
+                value={token} 
+                onChange={(e) => setToken(e.target.value)} 
+                placeholder="Токен бота (12345:AAA...)"
+                className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white focus:border-blue-500 outline-none"
             />
+            <button onClick={saveToken} className="p-2 bg-gray-700 rounded hover:bg-gray-600 text-gray-300" title="Сохранить токен"><Save size={20}/></button>
         </div>
+        <div className="flex gap-2">
+            {!isRunning ? (
+                <button onClick={startBot} className="flex items-center gap-2 px-6 py-2 bg-green-600 hover:bg-green-500 rounded font-bold shadow-lg shadow-green-900/20 transition-all active:scale-95 text-white">
+                    <Play size={18} /> ЗАПУСТИТЬ
+                </button>
+            ) : (
+                <button onClick={stopBot} className="flex items-center gap-2 px-6 py-2 bg-red-600 hover:bg-red-500 rounded font-bold shadow-lg shadow-red-900/20 transition-all active:scale-95 animate-pulse text-white">
+                    <Square size={18} /> ОСТАНОВИТЬ
+                </button>
+            )}
+            <button onClick={() => setLogs([])} className="p-2 bg-gray-700 rounded hover:bg-gray-600 text-gray-400" title="Очистить лог"><Trash2 size={20}/></button>
+        </div>
+      </div>
+
+      {/* LOGS */}
+      <div className="flex-1 bg-black p-4 overflow-y-auto font-mono text-xs md:text-sm space-y-1">
+        {logs.length === 0 && <div className="text-gray-600 text-center mt-10">Журнал событий пуст... Нажмите "Запустить"</div>}
+        {logs.map((log, i) => (
+            <div key={i} className={`border-l-2 pl-2 break-all ${
+                log.includes('❌') ? 'border-red-500 text-red-400' : 
+                log.includes('✅') ? 'border-green-500 text-green-400' : 
+                log.includes('📝') ? 'border-blue-500 text-blue-300' : 
+                log.includes('🆕') ? 'border-yellow-500 text-yellow-300' : 
+                log.includes('📢') ? 'border-purple-500 text-purple-300' :
+                'border-gray-700 text-gray-300'
+            }`}>
+                {log}
+            </div>
+        ))}
+      </div>
     </div>
   );
-};
-
-export default BotDashboard;
+}
