@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Terminal, X, ChevronRight, Bell, AlertCircle, Check } from 'lucide-react';
+import { Terminal, X, ChevronRight, AlertCircle, Check } from 'lucide-react';
 import { 
   collection, 
   addDoc, 
@@ -10,12 +10,11 @@ import {
   doc 
 } from "firebase/firestore";
 
-// Вспомогательная функция для получения правильной коллекции (как в App.jsx)
+// Вспомогательная функция для путей (как в App.jsx), чтобы уведомления доходили до пользователей
 const getCollection = (db, appId, collectionName) => {
   return collection(db, 'artifacts', appId, 'public', 'data', collectionName);
 };
 
-// Вспомогательная функция для получения правильного документа
 const getDocument = (db, appId, collectionName, docId) => {
   return doc(db, 'artifacts', appId, 'public', 'data', collectionName, docId);
 };
@@ -26,7 +25,7 @@ const BotDashboard = ({ onClose, db, currentAdmin, appId = 'ufic-taxi' }) => {
   const bottomRef = useRef(null);
   const mountTimeRef = useRef(Date.now());
 
-  // Логирование в терминал
+  // Логирование в окно терминала
   const addLog = (type, text) => {
     const safeText = typeof text === 'string' ? text : JSON.stringify(text);
     setLogs(prev => [...prev, { 
@@ -37,20 +36,33 @@ const BotDashboard = ({ onClose, db, currentAdmin, appId = 'ufic-taxi' }) => {
     }]);
   };
 
-  // Инициализация
+  // Инициализация и прослушка событий
   useEffect(() => {
-    addLog('system', 'Initializing UFIC Bot Terminal v2.1 (External Module)...');
-    addLog('system', `Connected as ADMIN: ${currentAdmin.name}`);
+    addLog('system', 'Initializing UFIC Bot Terminal v2.2 (External)...');
+    
+    if (!currentAdmin) {
+        addLog('error', 'Auth Error: Admin user not identified.');
+        return;
+    }
+
+    addLog('system', `Connected as ADMIN: ${currentAdmin.name || 'Unknown'}`);
     addLog('info', 'Type /help for available commands.');
     
-    // Подписка на уведомления (без orderBy, чтобы не требовать индекс)
+    if (!db) {
+        addLog('error', 'Database connection failed.');
+        return;
+    }
+
+    // Слушаем новые broadcast сообщения, чтобы видеть, что мы отправили
     const q = query(getCollection(db, appId, "broadcast_messages"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
         snapshot.docChanges().forEach((change) => {
             if (change.type === "added") {
                 const data = change.doc.data();
+                // Безопасное получение даты
                 const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date();
-                // Показываем только новые сообщения
+                
+                // Показываем только те, что пришли после открытия окна
                 if (createdAt.getTime() > mountTimeRef.current) {
                     addLog('event', `[BROADCAST] ${data.message ? data.message.substring(0, 50) : '...'}...`);
                 }
@@ -61,7 +73,7 @@ const BotDashboard = ({ onClose, db, currentAdmin, appId = 'ufic-taxi' }) => {
     return () => unsubscribe();
   }, [db, appId, currentAdmin]);
 
-  // Автоскролл
+  // Автопрокрутка вниз
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
@@ -80,7 +92,7 @@ const BotDashboard = ({ onClose, db, currentAdmin, appId = 'ufic-taxi' }) => {
     switch (command) {
         case '/help':
             addLog('info', 'Available commands:');
-            addLog('info', '  /broadcast <msg> - Send global alert');
+            addLog('info', '  /broadcast <msg> - Send global alert to app users');
             addLog('info', '  /ban <id>        - Ban user by ID');
             addLog('info', '  /clear           - Clear terminal');
             addLog('info', '  /exit            - Close terminal');
@@ -101,14 +113,14 @@ const BotDashboard = ({ onClose, db, currentAdmin, appId = 'ufic-taxi' }) => {
                 return;
             }
             try {
-                // Используем правильный путь через getCollection
+                // ВАЖНО: Используем getCollection с appId, чтобы путь совпал с тем, что слушает App.jsx
                 await addDoc(getCollection(db, appId, "broadcast_messages"), {
                     message: payload,
                     createdAt: serverTimestamp(),
                     createdBy: currentAdmin.id,
                     type: 'admin_alert'
                 });
-                addLog('success', 'Broadcast sent successfully!');
+                addLog('success', 'Broadcast sent successfully! Users will see it in ~5 sec.');
             } catch (e) {
                 addLog('error', `Error sending broadcast: ${e.message || 'Unknown error'}`);
             }
@@ -135,7 +147,7 @@ const BotDashboard = ({ onClose, db, currentAdmin, appId = 'ufic-taxi' }) => {
             if (command.startsWith('/')) {
                 addLog('error', `Unknown command: ${command}`);
             } else {
-                 // Если введено без слеша, считаем это броадкастом для удобства
+                 // Если набрали текст без команды, считаем это уведомлением (удобство)
                  executeCommand(`/broadcast ${cmdRaw}`);
             }
     }
@@ -147,7 +159,7 @@ const BotDashboard = ({ onClose, db, currentAdmin, appId = 'ufic-taxi' }) => {
         <div className="flex items-center justify-between p-3 border-b border-green-900/50 bg-black">
             <div className="flex items-center gap-2 text-green-500 font-bold">
                 <Terminal size={18} />
-                <span>ROOT_ACCESS@{currentAdmin.id}</span>
+                <span>ROOT_ACCESS@{currentAdmin?.id || 'GUEST'}</span>
             </div>
             <button onClick={onClose} className="text-green-700 hover:text-green-500"><X size={20} /></button>
         </div>
@@ -173,7 +185,7 @@ const BotDashboard = ({ onClose, db, currentAdmin, appId = 'ufic-taxi' }) => {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && executeCommand(input)}
                 className="flex-1 bg-transparent border-none outline-none text-green-400 placeholder-green-900 font-mono"
-                placeholder="Enter system command..."
+                placeholder="Enter command (e.g., /broadcast Hello)..."
             />
         </div>
     </div>

@@ -1087,8 +1087,7 @@ export default function TaxiShareApp() {
   <BotDashboard 
       db={db} 
       currentAdmin={USER_INFO}
-      onClose={() => setIsBotDashboardOpen(false)}
-      appId={typeof __app_id !== 'undefined' ? __app_id : 'ufic-taxi'} // Важно передать appId
+      onClose={() => setIsBotDashboardOpen(false)} 
   />
 )}
 
