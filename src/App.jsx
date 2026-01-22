@@ -30,7 +30,6 @@ import {
 } from "firebase/firestore";
 
 // --- ВАШИ НАСТРОЙКИ FIREBASE ---
-// Используем конфигурацию из стабильной версии
 const firebaseConfig = {
   apiKey: "AIzaSyCfvq5DliaTXTTPNOZzX4sJdF0xC7VK3z8",
   authDomain: "ufic-taxi.firebaseapp.com",
@@ -124,6 +123,7 @@ function BotDashboard({ db, onClose }) {
   const ridesCache = useRef({});
   const unsubscribers = useRef([]);
   const startTimeRef = useRef(null); 
+  const processedAlertsRef = useRef(new Set()); // Для отслеживания отправленных глобальных алертов
 
   const logsEndRef = useRef(null);
   useEffect(() => {
@@ -146,7 +146,7 @@ function BotDashboard({ db, onClose }) {
     if (String(chatId).length < 5) return;
 
     try {
-      addLog(`📤 Попытка отправки ID: ${chatId}...`, 'system');
+      // addLog(`📤 Попытка отправки ID: ${chatId}...`, 'system'); // Слишком много логов при рассылке
       const url = `https://api.telegram.org/bot${token}/sendMessage`;
       
       const response = await fetch(url, {
@@ -161,18 +161,101 @@ function BotDashboard({ db, onClose }) {
       
       const data = await response.json();
       
-      if (data.ok) {
-        addLog(`✅ Доставлено ID: ${chatId}`, 'success');
-      } else {
+      if (!data.ok) {
         if (data.error_code === 403) {
             addLog(`⛔ Юзер ${chatId} заблокировал бота`, 'error');
         } else {
-            addLog(`❌ Ошибка API: ${data.description}`, 'error');
+            addLog(`❌ Ошибка API (${chatId}): ${data.description}`, 'error');
         }
       }
     } catch (error) {
       addLog(`❌ Ошибка сети: ${error.message}`, 'error');
     }
+  };
+
+  // Функция массовой рассылки с возможностью исключения ID (например, автора)
+  const broadcastToAllUsers = async (text, excludeId = null) => {
+      addLog("📢 Начинаю массовую рассылку...", "warning");
+      try {
+          const usersSnap = await getDocs(collection(db, "users"));
+          let count = 0;
+          usersSnap.forEach(doc => {
+              const userData = doc.data();
+              // Проверяем, что ID существует и не совпадает с исключением
+              if (userData.id && String(userData.id) !== String(excludeId)) {
+                  sendTelegramMessage(userData.id, text);
+                  count++;
+              }
+          });
+          addLog(`✅ Рассылка завершена. Отправлено: ${count} пользователям.`, "success");
+      } catch (e) {
+          addLog(`Ошибка при рассылке: ${e.message}`, "error");
+      }
+  };
+
+  const checkScheduledAlerts = async () => {
+      const now = new Date();
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+      const dateStr = now.toDateString(); 
+
+      // Ключи для уникальности события на сегодня
+      const morningKey = `morning_alert_${dateStr}`;
+      const afternoonKey = `afternoon_alert_${dateStr}`;
+
+      // --- УТРЕННЯЯ РАССЫЛКА (07:30) ---
+      if (hours === 7 && minutes === 30 && !processedAlertsRef.current.has(morningKey)) {
+          processedAlertsRef.current.add(morningKey);
+          
+          // Собираем статистику (поездки в город до 11:00)
+          const ridesSnap = await getDocs(collection(db, "rides"));
+          const validRides = [];
+          let freeSeats = 0;
+
+          ridesSnap.forEach(doc => {
+              const r = doc.data();
+              // Фильтр: сегодня, в город, время < 11:00
+              const rideTime = parseInt(r.time.replace(':', ''));
+              if (r.date === getTodayDateString() && r.direction === 'to_city' && rideTime <= 1100) {
+                  validRides.push(r);
+                  freeSeats += (parseInt(r.seatsTotal || 0) - parseInt(r.seatsTaken || 0));
+              }
+          });
+
+          if (validRides.length > 0) {
+              const msg = `🌅 <b>Доброе утро!</b>\n\n🚕 <b>Ситуация на утро (до 11:00):</b>\n• Активных машин: <b>${validRides.length}</b>\n• Свободных мест: <b>${freeSeats}</b>\n\nЗаходите в приложение, чтобы занять место!`;
+              broadcastToAllUsers(msg);
+          } else {
+              addLog("Утренняя проверка: нет поездок для рассылки.", "system");
+          }
+      }
+
+      // --- ДНЕВНАЯ РАССЫЛКА (14:30) ---
+      if (hours === 14 && minutes === 30 && !processedAlertsRef.current.has(afternoonKey)) {
+          processedAlertsRef.current.add(afternoonKey);
+
+          // Поездки с 14:30 до конца дня
+          const ridesSnap = await getDocs(collection(db, "rides"));
+          const validRides = [];
+          let freeSeats = 0;
+
+          ridesSnap.forEach(doc => {
+              const r = doc.data();
+              const rideTimeVal = parseInt(r.time.replace(':', ''));
+              // Берем поездки с 14:30 до конца дня
+              if (r.date === getTodayDateString() && rideTimeVal >= 1430) {
+                  validRides.push(r);
+                  freeSeats += (parseInt(r.seatsTotal || 0) - parseInt(r.seatsTaken || 0));
+              }
+          });
+
+          if (validRides.length > 0) {
+              const msg = `☀️ <b>Добрый день!</b>\n\n🚕 <b>Машины на вечер:</b>\n• Активных машин: <b>${validRides.length}</b>\n• Свободных мест: <b>${freeSeats}</b>\n\nУспейте забронировать место домой!`;
+              broadcastToAllUsers(msg);
+          } else {
+              addLog("Дневная проверка: нет поездок для рассылки.", "system");
+          }
+      }
   };
 
   const startBot = () => {
@@ -185,7 +268,7 @@ function BotDashboard({ db, onClose }) {
     startTimeRef.current = new Date();
     addLog("🚀 БОТ ЗАПУЩЕН. Слушаю события...", 'success');
 
-    // Слушаем ВСЕ сообщения во ВСЕХ поездках (используем collectionGroup)
+    // 1. Слушаем сообщения
     const qMessages = query(
         collectionGroup(db, 'messages'), 
         where('createdAt', '>', startTimeRef.current),
@@ -198,7 +281,6 @@ function BotDashboard({ db, onClose }) {
                 const msg = change.doc.data();
                 if (msg.senderId === 'system') return;
 
-                // Получаем ID поездки из ref (родитель коллекции messages)
                 const rideRef = change.doc.ref.parent.parent;
                 if (!rideRef) return;
 
@@ -210,7 +292,6 @@ function BotDashboard({ db, onClose }) {
                     const recipients = new Set();
                     
                     if (ride.authorId !== msg.senderId) recipients.add(ride.authorId);
-                    
                     if (ride.requests) {
                         ride.requests.forEach(r => {
                             if (r.status === 'approved' && r.userId !== msg.senderId) {
@@ -219,49 +300,74 @@ function BotDashboard({ db, onClose }) {
                         });
                     }
                     
-                    const text = `💬 <b>Новое сообщение в поездке</b>\n\n👤 <b>${msg.senderName}:</b>\n"${msg.text}"\n\n<i>Зайдите в приложение, чтобы ответить.</i>`;
+                    const text = `💬 <b>Новое сообщение</b>\n👤 ${msg.senderName}: "${msg.text}"`;
                     recipients.forEach(id => sendTelegramMessage(id, text));
                     
                 } catch (e) {
-                    addLog(`Ошибка обработки сообщения: ${e.message}`, 'error');
+                    addLog(`Ошибка msg: ${e.message}`, 'error');
                 }
             }
         });
-    }, (error) => addLog(`Ошибка listener Messages: ${error.message}`, 'error'));
+    });
 
-    // Слушаем изменения в поездках (Root collection 'rides')
+    // 2. Слушаем поездки (Изменения статусов + НОВЫЕ ЗАЯВКИ ВСЕМ + НОВАЯ ПОЕЗДКА)
     const qRides = query(collection(db, 'rides'));
     
     const unsubRides = onSnapshot(qRides, (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
+        snapshot.docChanges().forEach(async (change) => {
             const rideData = change.doc.data();
             const rideId = change.doc.id;
             const currentRequests = rideData.requests || [];
 
+            // --- НОВАЯ ПОЕЗДКА ---
             if (change.type === 'added') {
                 ridesCache.current[rideId] = currentRequests;
+                
+                // Проверяем, что поездка создана ПОСЛЕ запуска бота
+                const createdAt = rideData.createdAt?.toDate ? rideData.createdAt.toDate() : new Date(0);
+                if (createdAt > startTimeRef.current) {
+                     const msg = `🚗 <b>Новая поездка!</b>\n👤 <b>${rideData.author}</b>\n📍 ${rideData.direction === 'to_city' ? 'В ГОРОД' : 'В УФИЦ'} (${rideData.destination})\n🕒 <b>${rideData.time}</b>\n💰 ${rideData.price || '?'} ₽\n\nЗаходите в приложение, чтобы занять место!`;
+                     
+                     // ОТПРАВЛЯЕМ ВСЕМ, КРОМЕ АВТОРА
+                     broadcastToAllUsers(msg, rideData.authorId);
+                }
                 return; 
             }
 
             if (change.type === 'modified') {
                 const prevRequests = ridesCache.current[rideId] || [];
 
-                currentRequests.forEach(newReq => {
+                currentRequests.forEach(async (newReq) => {
                     const oldReq = prevRequests.find(r => r.userId === newReq.userId);
 
+                    // --- НОВАЯ ЗАЯВКА НА УЧАСТИЕ ---
                     if (!oldReq) {
-                        addLog(`🆕 Новая заявка от ${newReq.name}`, 'warning');
+                        // 1. Уведомление водителю
+                        addLog(`🆕 Заявка от ${newReq.name}`, 'warning');
                         sendTelegramMessage(rideData.authorId, 
-                            `🚕 <b>Новая заявка!</b>\n\n👤 <b>${newReq.name}</b> хочет поехать с вами.\n📍 Куда: ${rideData.destination}\n⏰ Время: ${rideData.time}`);
+                            `🚕 <b>Новая заявка!</b>\n👤 <b>${newReq.name}</b>\n📍 ${rideData.destination}\n⏰ ${rideData.time}`);
+                        
+                        // 2. Уведомление ВСЕМ пользователям (кроме водителя и заявителя)
+                        const msg = `🔔 <b>Кто-то хочет поехать!</b>\nЗаявка на <b>${rideData.time}</b> (${rideData.destination}).\nМожет, пора и вам присоединиться?`;
+                        
+                        // Получаем всех юзеров и шлем (исключая участников)
+                        const usersSnap = await getDocs(collection(db, "users"));
+                        usersSnap.forEach(uDoc => {
+                            const uData = uDoc.data();
+                            // Не отправляем водителю и заявителю
+                            if (uData.id !== rideData.authorId && uData.id !== newReq.userId) {
+                                sendTelegramMessage(uData.id, msg);
+                            }
+                        });
                     }
+                    // --- ИЗМЕНЕНИЕ СТАТУСА ---
                     else if (oldReq.status !== newReq.status) {
-                        addLog(`🔄 Статус изменен (${newReq.name}): ${newReq.status}`);
                         if (newReq.status === 'approved') {
                             sendTelegramMessage(newReq.userId, 
-                                `✅ <b>Ваша заявка принята!</b>\n\n🚘 Водитель: ${rideData.author}\n⏰ Время: ${rideData.time}\n📍 Назначение: ${rideData.destination}`);
+                                `✅ <b>Заявка принята!</b>\n🚘 Водитель: ${rideData.author}\n⏰ ${rideData.time}\n📍 Назначение: ${rideData.destination}`);
                         } else if (newReq.status === 'rejected') {
                             sendTelegramMessage(newReq.userId, 
-                                `❌ <b>Заявка отклонена</b>\n\nВодитель отклонил вашу заявку на ${rideData.time}.`);
+                                `❌ <b>Заявка отклонена</b>\nВодитель отклонил вашу заявку на ${rideData.time}.`);
                         }
                     }
                 });
@@ -271,9 +377,12 @@ function BotDashboard({ db, onClose }) {
                 delete ridesCache.current[rideId];
             }
         });
-    }, (error) => addLog(`Ошибка listener Rides: ${error.message}`, 'error'));
+    });
 
-    unsubscribers.current = [unsubMsg, unsubRides];
+    // 3. Таймер для рассылок (каждую минуту)
+    const intervalId = setInterval(checkScheduledAlerts, 60000);
+
+    unsubscribers.current = [unsubMsg, unsubRides, () => clearInterval(intervalId)];
   };
 
   const stopBot = () => {
