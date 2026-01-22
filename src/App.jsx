@@ -55,9 +55,6 @@ const getTelegramApp = () => {
 
 const tg = getTelegramApp();
 
-// Ссылка на приложение (исправлено на прямую web-ссылку)
-const APP_LINK = "https://ufic-taxi.vercel.app/"; 
-
 if (tg) {
   tg.ready();
   tg.expand();
@@ -175,13 +172,7 @@ function BotDashboard({ db, onClose }) {
           body: JSON.stringify({
               chat_id: chatId,
               text: text,
-              parse_mode: 'HTML',
-              // Добавляем кнопку для перехода в приложение
-              reply_markup: {
-                  inline_keyboard: [
-                      [{ text: "🚕 Открыть приложение", url: APP_LINK }]
-                  ]
-              }
+              parse_mode: 'HTML'
           })
       });
       
@@ -275,6 +266,7 @@ function BotDashboard({ db, onClose }) {
               const r = doc.data();
               if (r.time) {
                   const rideTimeVal = parseInt(r.time.replace(':', ''));
+                  // Берем поездки с 14:30 до конца дня
                   if (r.date === getTodayDateString() && rideTimeVal >= 1430) {
                       validRides.push(r);
                       freeSeats += (parseInt(r.seatsTotal || 0) - parseInt(r.seatsTaken || 0));
