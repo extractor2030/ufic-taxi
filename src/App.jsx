@@ -55,8 +55,8 @@ const getTelegramApp = () => {
 
 const tg = getTelegramApp();
 
-// Ссылка на бота (для уведомлений)
-const APP_LINK = "https://t.me/ufic_taxi_bot"; 
+// Ссылка на приложение (исправлено на прямую web-ссылку)
+const APP_LINK = "https://ufic-taxi.vercel.app/"; 
 
 if (tg) {
   tg.ready();
@@ -176,9 +176,10 @@ function BotDashboard({ db, onClose }) {
               chat_id: chatId,
               text: text,
               parse_mode: 'HTML',
+              // Добавляем кнопку для перехода в приложение
               reply_markup: {
                   inline_keyboard: [
-                      [{ text: "🚕 Открыть бота", url: APP_LINK }]
+                      [{ text: "🚕 Открыть приложение", url: APP_LINK }]
                   ]
               }
           })
