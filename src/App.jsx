@@ -368,26 +368,16 @@ function BotDashboard({ db, onClose }) {
                 currentRequests.forEach(async (newReq) => {
                     const oldReq = prevRequests.find(r => r.userId === newReq.userId);
 
-                    // --- НОВАЯ ЗАЯВКА НА УЧАСТИЕ (ОБЩЕЕ УВЕДОМЛЕНИЕ) ---
+                    // --- НОВАЯ ЗАЯВКА НА УЧАСТИЕ (ЛИЧНОЕ УВЕДОМЛЕНИЕ ОРГАНИЗАТОРУ) ---
                     if (!oldReq) {
                         const dateFormatted = formatDate(rideData.date);
                         
-                        // 1. ЛИЧНОЕ уведомление водителю (чтобы он точно увидел)
+                        // Уведомление ТОЛЬКО водителю
+                        addLog(`🆕 Заявка от ${newReq.name}`, 'warning');
                         sendTelegramMessage(rideData.authorId, 
                             `🚕 <b>Новая заявка вам!</b>\n👤 <b>${newReq.name}</b> хочет поехать.\n📅 ${dateFormatted}\n📍 ${rideData.destination}\n⏰ ${rideData.time}`);
                         
-                        // 2. ОБЩЕЕ уведомление всем остальным
-                        const msg = `🔔 <b>Кто-то хочет поехать!</b>\nПользователь оставил заявку на поездку:\n📅 <b>${dateFormatted}</b>\n⏰ <b>${rideData.time}</b> (${rideData.destination}).\n\nМожет, пора и вам присоединиться?`;
-                        
-                        // Рассылаем всем, кроме автора поездки (он получил личное) и самого заявителя
-                        const usersSnap = await getDocs(collection(db, "users"));
-                        usersSnap.forEach(uDoc => {
-                            const uData = uDoc.data();
-                            if (uData.id && String(uData.id) !== String(rideData.authorId) && String(uData.id) !== String(newReq.userId)) {
-                                sendTelegramMessage(uData.id, msg);
-                            }
-                        });
-                        addLog(`🔔 Общее уведомление о заявке отправлено`, 'success');
+                        // БЛОК ОБЩЕГО УВЕДОМЛЕНИЯ О ЗАЯВКЕ УДАЛЕН ПО ПРОСЬБЕ
                     }
                     
                     // --- ИЗМЕНЕНИЕ СТАТУСА (ЛИЧНОЕ УВЕДОМЛЕНИЕ) ---
