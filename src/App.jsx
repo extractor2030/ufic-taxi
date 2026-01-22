@@ -55,8 +55,8 @@ const getTelegramApp = () => {
 
 const tg = getTelegramApp();
 
-// Ссылка на ваше приложение (замените на реальную ссылку вашего бота/приложения)
-const APP_LINK = "https://t.me/UFIC_TAXI_BOT/app"; 
+// Ссылка на бота (для уведомлений)
+const APP_LINK = "https://t.me/ufic_taxi_bot"; 
 
 if (tg) {
   tg.ready();
@@ -176,10 +176,9 @@ function BotDashboard({ db, onClose }) {
               chat_id: chatId,
               text: text,
               parse_mode: 'HTML',
-              // Добавляем кнопку для перехода в приложение
               reply_markup: {
                   inline_keyboard: [
-                      [{ text: "🚕 Открыть приложение", url: APP_LINK }]
+                      [{ text: "🚕 Открыть бота", url: APP_LINK }]
                   ]
               }
           })
@@ -207,7 +206,6 @@ function BotDashboard({ db, onClose }) {
           let count = 0;
           usersSnap.forEach(doc => {
               const userData = doc.data();
-              // Исключаем автора события, чтобы не спамить ему
               if (userData.id && String(userData.id) !== String(excludeId)) {
                   sendTelegramMessage(userData.id, text);
                   count++;
@@ -223,7 +221,6 @@ function BotDashboard({ db, onClose }) {
     if (!manualMessage.trim()) return;
     if (!window.confirm("Вы уверены, что хотите отправить это сообщение ВСЕМ пользователям?")) return;
     
-    // Добавляем префикс, чтобы было понятно, что это от админа
     const msg = `📢 <b>Объявление от Админа:</b>\n\n${manualMessage}`;
     broadcastToAllUsers(msg);
     setManualMessage("");
@@ -238,7 +235,7 @@ function BotDashboard({ db, onClose }) {
       const morningKey = `morning_alert_${dateStr}`;
       const afternoonKey = `afternoon_alert_${dateStr}`;
 
-      // --- УТРЕННЯЯ РАССЫЛКА (07:30) - ОБЩЕЕ ---
+      // --- УТРЕННЯЯ РАССЫЛКА (07:30) ---
       if (hours === 7 && minutes === 30 && !processedAlertsRef.current.has(morningKey)) {
           processedAlertsRef.current.add(morningKey);
           
@@ -265,7 +262,7 @@ function BotDashboard({ db, onClose }) {
           }
       }
 
-      // --- ДНЕВНАЯ РАССЫЛКА (14:30) - ОБЩЕЕ ---
+      // --- ДНЕВНАЯ РАССЫЛКА (14:30) ---
       if (hours === 14 && minutes === 30 && !processedAlertsRef.current.has(afternoonKey)) {
           processedAlertsRef.current.add(afternoonKey);
 
@@ -277,7 +274,6 @@ function BotDashboard({ db, onClose }) {
               const r = doc.data();
               if (r.time) {
                   const rideTimeVal = parseInt(r.time.replace(':', ''));
-                  // Берем поездки с 14:30 до конца дня
                   if (r.date === getTodayDateString() && rideTimeVal >= 1430) {
                       validRides.push(r);
                       freeSeats += (parseInt(r.seatsTotal || 0) - parseInt(r.seatsTaken || 0));
@@ -304,7 +300,7 @@ function BotDashboard({ db, onClose }) {
     startTimeRef.current = new Date();
     addLog("🚀 БОТ ЗАПУЩЕН. Слушаю события...", 'success');
 
-    // 1. Слушаем сообщения - ЛИЧНЫЕ УВЕДОМЛЕНИЯ
+    // 1. Сообщения
     const qMessages = query(
         collectionGroup(db, 'messages'), 
         where('createdAt', '>', startTimeRef.current),
@@ -327,7 +323,6 @@ function BotDashboard({ db, onClose }) {
                     const ride = rideSnap.data();
                     const recipients = new Set();
                     
-                    // Уведомляем только участников (водителя и принятых пассажиров)
                     if (ride.authorId !== msg.senderId) recipients.add(ride.authorId);
                     if (ride.requests) {
                         ride.requests.forEach(r => {
@@ -347,7 +342,7 @@ function BotDashboard({ db, onClose }) {
         });
     });
 
-    // 2. Слушаем поездки
+    // 2. Поездки
     const qRides = query(collection(db, 'rides'));
     
     const unsubRides = onSnapshot(qRides, (snapshot) => {
@@ -356,16 +351,14 @@ function BotDashboard({ db, onClose }) {
             const rideId = change.doc.id;
             const currentRequests = rideData.requests || [];
 
-            // --- СОЗДАНИЕ НОВОЙ ПОЕЗДКИ (ОБЩЕЕ УВЕДОМЛЕНИЕ) ---
+            // --- НОВАЯ ПОЕЗДКА (ОБЩЕЕ) ---
             if (change.type === 'added') {
                 ridesCache.current[rideId] = currentRequests;
                 
                 const createdAt = rideData.createdAt?.toDate ? rideData.createdAt.toDate() : new Date(0);
                 if (createdAt > startTimeRef.current) {
-                     const dateFormatted = formatDate(rideData.date); // Форматируем дату
+                     const dateFormatted = formatDate(rideData.date);
                      const msg = `🚗 <b>Новая поездка!</b>\n📅 <b>${dateFormatted}</b>\n👤 <b>${rideData.author}</b>\n📍 ${rideData.direction === 'to_city' ? 'В ГОРОД' : 'В УФИЦ'} (${rideData.destination})\n🕒 <b>${rideData.time}</b>\n💰 ${rideData.price || '?'} ₽\n\nЗаходите в приложение, чтобы занять место!`;
-                     
-                     // Отправляем ВСЕМ пользователям (кроме создателя)
                      broadcastToAllUsers(msg, rideData.authorId);
                 }
                 return; 
@@ -377,17 +370,15 @@ function BotDashboard({ db, onClose }) {
                 currentRequests.forEach(async (newReq) => {
                     const oldReq = prevRequests.find(r => r.userId === newReq.userId);
 
-                    // --- НОВАЯ ЗАЯВКА НА УЧАСТИЕ (ЛИЧНОЕ УВЕДОМЛЕНИЕ ОРГАНИЗАТОРУ) ---
+                    // --- НОВАЯ ЗАЯВКА (ЛИЧНОЕ АВТОРУ) ---
                     if (!oldReq) {
                         const dateFormatted = formatDate(rideData.date);
-                        
-                        // Уведомление ТОЛЬКО водителю
                         addLog(`🆕 Заявка от ${newReq.name}`, 'warning');
                         sendTelegramMessage(rideData.authorId, 
                             `🚕 <b>Новая заявка вам!</b>\n👤 <b>${newReq.name}</b> хочет поехать.\n📅 ${dateFormatted}\n📍 ${rideData.destination}\n⏰ ${rideData.time}`);
                     }
                     
-                    // --- ИЗМЕНЕНИЕ СТАТУСА (ЛИЧНОЕ УВЕДОМЛЕНИЕ) ---
+                    // --- ИЗМЕНЕНИЕ СТАТУСА (ЛИЧНОЕ УЧАСТНИКУ) ---
                     else if (oldReq.status !== newReq.status) {
                         const dateFormatted = formatDate(rideData.date);
                         if (newReq.status === 'approved') {
@@ -407,9 +398,7 @@ function BotDashboard({ db, onClose }) {
         });
     });
 
-    // 3. Таймер
     const intervalId = setInterval(checkScheduledAlerts, 60000);
-
     unsubscribers.current = [unsubMsg, unsubRides, () => clearInterval(intervalId)];
   };
 
@@ -1014,11 +1003,13 @@ export default function TaxiShareApp() {
     }
     
     // Проверка на прошедшее время
-    const selectedDate = new Date(`${newRide.date}T${newRide.time}`);
-    const now = new Date();
-    if (selectedDate < now) {
-      showToast("Нельзя создать поездку на прошедшее время", 'error');
-      return;
+    if (newRide.date && newRide.time) {
+        const rideDateTime = new Date(`${newRide.date}T${newRide.time}`);
+        const now = new Date();
+        if (rideDateTime < now) {
+            showToast("Нельзя создать поездку в прошлом!", 'error');
+            return;
+        }
     }
 
     if (!newRide.time || !newRide.destination || !newRide.date) {
