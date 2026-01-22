@@ -1003,13 +1003,11 @@ export default function TaxiShareApp() {
     }
     
     // Проверка на прошедшее время
-    if (newRide.date && newRide.time) {
-        const rideDateTime = new Date(`${newRide.date}T${newRide.time}`);
-        const now = new Date();
-        if (rideDateTime < now) {
-            showToast("Нельзя создать поездку в прошлом!", 'error');
-            return;
-        }
+    const selectedDate = new Date(`${newRide.date}T${newRide.time}`);
+    const now = new Date();
+    if (selectedDate < now) {
+      showToast("Нельзя создать поездку на прошедшее время", 'error');
+      return;
     }
 
     if (!newRide.time || !newRide.destination || !newRide.date) {
