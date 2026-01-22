@@ -1012,6 +1012,15 @@ export default function TaxiShareApp() {
       showToast("Лимит: макс. 5 активных поездок", 'error');
       return;
     }
+    
+    // Проверка на прошедшее время
+    const selectedDate = new Date(`${newRide.date}T${newRide.time}`);
+    const now = new Date();
+    if (selectedDate < now) {
+      showToast("Нельзя создать поездку на прошедшее время", 'error');
+      return;
+    }
+
     if (!newRide.time || !newRide.destination || !newRide.date) {
       showToast("Заполните основные поля", 'error');
       return;
