@@ -73,22 +73,20 @@ if (tg) {
 // Получаем данные пользователя
 const telegramUser = tg?.initDataUnsafe?.user;
 
+// Если зашли не из Telegram, даем случайный ID, чтобы не было конфликтов
 const USER_INFO = telegramUser ? {
   name: `${telegramUser.first_name} ${telegramUser.last_name || ''}`.trim(),
   id: telegramUser.id, 
   telegram: telegramUser.username,
 } : {
-  name: "Тестовый Пользователь",
-  id: 999, 
-  telegram: "test_user",
+  name: "Гость (Не из Telegram)",
+  id: Math.floor(Math.random() * 1000000) + 100000, 
+  telegram: "",
 };
 
 // --- НАСТРОЙКИ МОДЕРАЦИИ ---
-// ВНИМАНИЕ: Исправлена логика админов. 
-// Убрали USER_INFO.id из массива, чтобы каждый не становился админом.
-// 999 - это тестовый ID браузера (лучше удалить перед релизом на реальных юзеров)
-// 5105978639 - это ваш реальный Telegram ID
-const ADMIN_IDS = [5105978639, 999]; 
+// ВНИМАНИЕ: Оставлен ТОЛЬКО ваш реальный ID. Тестовый 999 убран.
+const ADMIN_IDS = [5105978639]; 
 const isAdmin = ADMIN_IDS.includes(USER_INFO.id);
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
