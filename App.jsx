@@ -85,9 +85,9 @@ const USER_INFO = telegramUser ? {
 };
 
 // --- НАСТРОЙКИ МОДЕРАЦИИ ---
-// ВНИМАНИЕ: Оставлен ТОЛЬКО ваш реальный ID. Тестовый 999 убран.
-const ADMIN_IDS = [5105978639]; 
-const isAdmin = ADMIN_IDS.includes(USER_INFO.id);
+// ЖЕСТКАЯ ПРОВЕРКА НА АДМИНА: Только строгое совпадение строк!
+const ADMIN_ID = "5105978639"; 
+const isAdmin = String(USER_INFO.id) === ADMIN_ID;
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 const getTodayDateString = () => {
@@ -1223,12 +1223,19 @@ export default function TaxiShareApp() {
 
       <div className="sticky top-0 z-40 bg-gray-900/95 backdrop-blur-md border-b border-gray-800 px-4 py-3 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-2">
-           <div 
-             className={`w-8 h-8 rounded-lg flex items-center justify-center shadow-lg transition-colors ${isAdmin ? (adminMode ? 'bg-red-600 shadow-red-500/20 hover:bg-red-500' : 'bg-gray-700 hover:bg-gray-600 cursor-pointer') : 'bg-gradient-to-tr from-blue-600 to-blue-400 shadow-blue-500/20'}`}
-             onClick={() => isAdmin && setAdminMode(!adminMode)}
-           >
-             {isAdmin ? <Shield size={18} className={adminMode ? "text-white" : "text-gray-400"} /> : <Car size={18} className="text-white" />}
-           </div>
+           {isAdmin ? (
+               <div 
+                 className={`w-8 h-8 rounded-lg flex items-center justify-center shadow-lg transition-colors cursor-pointer ${adminMode ? 'bg-red-600 shadow-red-500/20 hover:bg-red-500' : 'bg-gray-700 hover:bg-gray-600'}`}
+                 onClick={() => setAdminMode(!adminMode)}
+                 title="Админ-режим"
+               >
+                 <Shield size={18} className={adminMode ? "text-white" : "text-gray-400"} />
+               </div>
+           ) : (
+               <div className="w-8 h-8 rounded-lg flex items-center justify-center shadow-lg bg-gradient-to-tr from-blue-600 to-blue-400 shadow-blue-500/20 cursor-default">
+                 <Car size={18} className="text-white" />
+               </div>
+           )}
            <div>
              <div className="text-sm font-bold text-white leading-none">UFIC</div>
              <div className="text-[10px] text-gray-400 font-medium">Taxi Sharing {adminMode && <span className="text-red-400 font-bold">(ADMIN)</span>}</div>
